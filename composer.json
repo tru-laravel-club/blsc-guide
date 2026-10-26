@@ -3,7 +3,11 @@
     "description": "A step-by-step contributor guide for the BIG Little Science Centre website. Install it as a dev dependency only.",
     "type": "library",
     "license": "MIT",
-    "keywords": ["laravel", "guide", "education"],
+    "keywords": [
+        "laravel",
+        "guide",
+        "education"
+    ],
     "require": {
         "php": "^8.3",
         "illuminate/console": "^13.0",
@@ -13,6 +17,8 @@
         "illuminate/view": "^13.0"
     },
     "require-dev": {
+        "larastan/larastan": "^3.13",
+        "laravel/pint": "^1.32",
         "orchestra/testbench": "^11.0",
         "pestphp/pest": "^5.0"
     },
@@ -32,6 +38,26 @@
                 "TruLaravelClub\\BlscGuide\\GuideServiceProvider"
             ]
         }
+    },
+    "scripts": {
+        "lint": [
+            "pint --parallel"
+        ],
+        "lint:check": [
+            "pint --parallel --test"
+        ],
+        "types:check": [
+            "@php -d memory_limit=512M vendor/bin/phpstan analyse"
+        ],
+        "test": [
+            "@php vendor/bin/pest"
+        ],
+        "ci:check": [
+            "Composer\\Config::disableProcessTimeout",
+            "@lint:check",
+            "@types:check",
+            "@test"
+        ]
     },
     "config": {
         "sort-packages": true,

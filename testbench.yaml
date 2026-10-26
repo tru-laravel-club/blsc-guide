@@ -1,0 +1,6 @@
+# Larastan boots this app to analyse the package. The guide only runs locally.
+providers:
+  - TruLaravelClub\BlscGuide\GuideServiceProvider
+
+env:
+  APP_ENV: local

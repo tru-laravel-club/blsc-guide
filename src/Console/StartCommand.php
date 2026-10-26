@@ -47,7 +47,7 @@ class StartCommand extends Command
         $this->copyTest($feature, $files);
 
         $this->components->info("Started [{$feature->key()}].");
-        $this->line("Follow the steps with <comment>php artisan guide {$feature->key()}</comment>, or open <comment>".url(config('blsc-guide.path').'/'.$feature->key()).'</comment>.');
+        $this->line("Follow the steps with <comment>php artisan guide {$feature->key()}</comment>, or open <comment>".route('blsc-guide.show', $feature->key()).'</comment>.');
 
         return self::SUCCESS;
     }

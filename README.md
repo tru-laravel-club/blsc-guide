@@ -1,5 +1,8 @@
 # BLSC contributor guide
 
+[![tests](https://github.com/tru-laravel-club/blsc-guide/actions/workflows/tests.yml/badge.svg)](https://github.com/tru-laravel-club/blsc-guide/actions/workflows/tests.yml)
+[![Packagist](https://img.shields.io/packagist/v/tru-laravel-club/blsc-guide)](https://packagist.org/packages/tru-laravel-club/blsc-guide)
+
 This package is a step-by-step guide for club members who build the [BIG Little Science Centre website](https://github.com/tru-laravel-club/blsc-website). It shows every planned feature, what each feature needs first, and the steps to build it. The guide checks the app code, so the steps tick off as you work.
 
 The guide is a development tool only. The BLSC website never depends on it.
@@ -17,17 +20,6 @@ The guide is a development tool only. The BLSC website never depends on it.
 4. Open <http://localhost:8000/guide>.
 
 The guide loads only when `APP_ENV=local`. Servers install with `composer install --no-dev`, so the guide is never on a server.
-
-### Before the package is on Packagist
-
-Clone this repository next to `blsc-website`. Then add a path repository in `blsc-website`:
-
-```shell
-composer config repositories.blsc-guide path ../blsc-guide
-composer require --dev tru-laravel-club/blsc-guide:@dev
-```
-
-Do not commit these `composer.json` changes.
 
 ## Build a feature
 
@@ -61,6 +53,27 @@ Do not commit these `composer.json` changes.
 | Not planned | A lead has not written the steps yet. |
 
 The guide reads the code on your machine. Run `git pull` to see work that other members merged.
+
+## Work on the guide
+
+1. Clone this repository next to `blsc-website`.
+2. Run the checks:
+
+   ```shell
+   composer install
+   composer ci:check
+   ```
+
+   This runs Pint, PHPStan and the test suite. CI runs the same checks on PHP 8.3, 8.4 and 8.5.
+
+3. To try your change in the app, use a path repository in `blsc-website`:
+
+   ```shell
+   composer config repositories.blsc-guide path ../blsc-guide
+   composer require --dev tru-laravel-club/blsc-guide:@dev
+   ```
+
+   Do not commit these `composer.json` changes.
 
 ## For leads: plan a feature
 

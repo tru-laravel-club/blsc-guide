@@ -27,12 +27,14 @@ class GuideServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // Views do nothing on their own. Without the routes below, nobody can open them.
+        $this->loadViewsFrom(__DIR__.'/../resources/views', 'blsc-guide');
+
         // The guide is for club members on their own machines. It never loads on a server.
         if (! $this->app->environment('local')) {
             return;
         }
 
-        $this->loadViewsFrom(__DIR__.'/../resources/views', 'blsc-guide');
         $this->loadRoutesFrom(__DIR__.'/../routes/guide.php');
 
         if ($this->app->runningInConsole()) {

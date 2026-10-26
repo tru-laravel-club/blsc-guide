@@ -18,7 +18,7 @@ class GuideCommand extends Command
     {
         $key = $this->argument('feature');
 
-        if ($key === null) {
+        if (! is_string($key)) {
             $this->showMap($map);
 
             return self::SUCCESS;
@@ -59,7 +59,7 @@ class GuideCommand extends Command
         }
 
         $this->newLine();
-        $this->line('Run <comment>php artisan guide {feature}</comment> to see the steps, or open <comment>'.url(config('blsc-guide.path')).'</comment>.');
+        $this->line('Run <comment>php artisan guide {feature}</comment> to see the steps, or open <comment>'.route('blsc-guide.index').'</comment>.');
     }
 
     private function showFeature(FeatureMap $map, Feature $feature): void
