@@ -3,6 +3,7 @@
 namespace TruLaravelClub\BlscGuide\Console;
 
 use Illuminate\Console\Command;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use TruLaravelClub\BlscGuide\Feature;
 use TruLaravelClub\BlscGuide\FeatureMap;
 use TruLaravelClub\BlscGuide\Section;
@@ -10,7 +11,9 @@ use TruLaravelClub\BlscGuide\Status;
 
 class GuideCommand extends Command
 {
-    protected $signature = 'guide {feature? : The feature key, such as big-little-scientists}';
+    protected $signature = 'guide
+        {feature? : The feature key, such as big-little-scientists}
+        {--answers : Also show the commands and code that hints hide}';
 
     protected $description = 'Show the BLSC feature map, or the steps of one feature';
 
@@ -79,10 +82,33 @@ class GuideCommand extends Command
         }
 
         if (! $feature->isPlanned()) {
-            $this->components->info('A lead has not written the steps for this feature yet.');
+            $this->components->info('A maintainer has not written the steps for this feature yet.');
 
             return;
         }
+
+        if ($feature->introduction() !== null) {
+            $this->newLine();
+            $this->line(' <options=bold>How it works</>');
+
+            foreach (explode("\n", $feature->introduction()) as $line) {
+                $this->line('   '.OutputFormatter::escape($line));
+            }
+        }
+
+        if ($feature->links() !== []) {
+            $this->newLine();
+            $this->line(' <options=bold>Learn first</>');
+
+            foreach ($feature->links() as $link) {
+                $this->line('   '.($link['type'] === 'video' ? 'Watch' : 'Read').': '.OutputFormatter::escape($link['title']).' <fg=gray>'.$link['url'].'</>');
+            }
+        }
+
+        $this->newLine();
+        $this->line(' <options=bold>Before you start</> <fg=gray>(see /guide/git for why)</>');
+        $this->line('   <comment>git switch main && git pull upstream main</comment>');
+        $this->line("   <comment>git switch -c feature/{$feature->key()}</comment>");
 
         foreach ($feature->stepList() as $index => $step) {
             $mark = match (true) {
@@ -94,12 +120,52 @@ class GuideCommand extends Command
             $this->newLine();
             $this->line(" {$mark} <options=bold>".($index + 1).". {$step->title()}</>");
 
+            if ($step->explanation() !== null) {
+                foreach (explode("\n", $step->explanation()) as $line) {
+                    $this->line('     '.OutputFormatter::escape($line));
+                }
+            }
+
+            foreach ($step->links() as $link) {
+                $this->line('     <fg=gray>'.($link['type'] === 'video' ? 'Watch' : 'Read').':</> '.OutputFormatter::escape($link['title']).' <fg=gray>'.$link['url'].'</>');
+            }
+
+            if ($step->question() !== null) {
+                $this->line('     <fg=blue>Think first:</> '.OutputFormatter::escape($step->question()));
+            }
+
+            if ($step->tryItText() !== null) {
+                $this->line('     <fg=green>Try it:</> '.OutputFormatter::escape(str_replace("\n", ' ', $step->tryItText())));
+            }
+
+            if ($step->commitMessage() !== null) {
+                $this->line('     <fg=yellow>Commit:</> git status && git diff, then git add . && git commit -m "'.OutputFormatter::escape($step->commitMessage()).'"');
+            }
+
+            // Hints hide the answer, so members try first. The web page shows the hints.
+            if ($step->hints() !== [] && ! $this->option('answers')) {
+                $this->line('     <fg=gray>'.count($step->hints()).' hints on the web page. Add --answers to show the answer here.</>');
+
+                continue;
+            }
+
             if ($step->command() !== null) {
                 $this->line("     <comment>{$step->command()}</comment>");
             }
 
-            if ($step->explanation() !== null) {
-                $this->line("     {$step->explanation()}");
+            if ($step->snippet() !== null) {
+                foreach (explode("\n", $step->snippet()) as $line) {
+                    $this->line('     <fg=cyan>'.OutputFormatter::escape($line).'</>');
+                }
+            }
+        }
+
+        if ($feature->questions() !== []) {
+            $this->newLine();
+            $this->line(' <options=bold>Finish:</> run guide:done, merge upstream/main, push, then open a pull request. Answer these questions in it:');
+
+            foreach ($feature->questions() as $question) {
+                $this->line('   - '.OutputFormatter::escape($question));
             }
         }
 

@@ -22,7 +22,7 @@ final class FeatureMap
     /**
      * @param  iterable<Feature>  $features
      */
-    public function __construct(iterable $features)
+    public function __construct(iterable $features, private readonly ?Progress $progress = null)
     {
         foreach ($features as $feature) {
             if (isset($this->features[$feature->key()])) {
@@ -36,7 +36,7 @@ final class FeatureMap
     /**
      * Load every PHP file in a folder. Each file must return a Feature.
      */
-    public static function fromDirectory(string $directory): self
+    public static function fromDirectory(string $directory, ?Progress $progress = null): self
     {
         $files = glob(rtrim($directory, '/').'/*.php') ?: [];
         sort($files);
@@ -49,7 +49,7 @@ final class FeatureMap
             }
 
             return $feature;
-        }, $files));
+        }, $files), $progress);
     }
 
     /**
@@ -141,6 +141,24 @@ final class FeatureMap
         ));
     }
 
+    public function isMarkedDone(Feature $feature): bool
+    {
+        return $this->progress?->isMarked($feature->key()) ?? false;
+    }
+
+    public function markedOn(Feature $feature): ?string
+    {
+        return $this->progress?->markedOn($feature->key());
+    }
+
+    /**
+     * The number of steps that the guide can check. Steps without a check do not count.
+     */
+    public function checkableSteps(Feature $feature): int
+    {
+        return count(array_filter($feature->stepList(), static fn (Step $step): bool => $step->isCheckable()));
+    }
+
     public function completedSteps(Feature $feature): int
     {
         return count(array_filter($feature->stepList(), static fn (Step $step): bool => $step->passes()));
@@ -172,6 +190,11 @@ final class FeatureMap
 
     private function resolveStatus(Feature $feature): Status
     {
+        // The pull request that builds a feature also marks it. Other contributors did not run its test.
+        if ($this->isMarkedDone($feature)) {
+            return Status::Done;
+        }
+
         if (! $feature->isPlanned()) {
             return Status::NotPlanned;
         }

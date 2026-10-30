@@ -19,7 +19,17 @@ final class Step
 
     private ?string $code = null;
 
-    private ?string $docs = null;
+    /** @var list<array{type: 'docs'|'video', url: string, title: string}> */
+    private array $links = [];
+
+    private ?string $question = null;
+
+    /** @var list<string> */
+    private array $hints = [];
+
+    private ?string $tryIt = null;
+
+    private ?string $commit = null;
 
     private ?Closure $check = null;
 
@@ -51,9 +61,62 @@ final class Step
         return $this;
     }
 
-    public function docs(string $url): self
+    /**
+     * A question for the member to think about before they write code.
+     */
+    public function think(string $question): self
     {
-        $this->docs = $url;
+        $this->question = $question;
+
+        return $this;
+    }
+
+    /**
+     * Add a hint. The guide shows hints one at a time, so give the smallest hint first.
+     */
+    public function hint(string $hint): self
+    {
+        $this->hints[] = $hint;
+
+        return $this;
+    }
+
+    /**
+     * Link to a page of the Laravel documentation, or another page to read.
+     */
+    /**
+     * Tell the member how to see the result of the step, such as a page to open.
+     */
+    public function tryIt(string $text): self
+    {
+        $this->tryIt = $text;
+
+        return $this;
+    }
+
+    /**
+     * Suggest a commit message for the work of this step, such as "Add the Category model".
+     */
+    public function commit(string $message): self
+    {
+        $this->commit = $message;
+
+        return $this;
+    }
+
+    public function docs(string $url, string $title = 'Laravel docs'): self
+    {
+        $this->links[] = ['type' => 'docs', 'url' => $url, 'title' => $title];
+
+        return $this;
+    }
+
+    /**
+     * Link to a video that explains the idea of this step.
+     */
+    public function video(string $url, string $title): self
+    {
+        $this->links[] = ['type' => 'video', 'url' => $url, 'title' => $title];
 
         return $this;
     }
@@ -88,9 +151,35 @@ final class Step
         return $this->code;
     }
 
-    public function docsUrl(): ?string
+    public function question(): ?string
     {
-        return $this->docs;
+        return $this->question;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function hints(): array
+    {
+        return $this->hints;
+    }
+
+    public function tryItText(): ?string
+    {
+        return $this->tryIt;
+    }
+
+    public function commitMessage(): ?string
+    {
+        return $this->commit;
+    }
+
+    /**
+     * @return list<array{type: 'docs'|'video', url: string, title: string}>
+     */
+    public function links(): array
+    {
+        return $this->links;
     }
 
     public function isCheckable(): bool

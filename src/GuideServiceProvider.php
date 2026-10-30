@@ -4,6 +4,7 @@ namespace TruLaravelClub\BlscGuide;
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\ServiceProvider;
+use TruLaravelClub\BlscGuide\Console\DoneCommand;
 use TruLaravelClub\BlscGuide\Console\GuideCommand;
 use TruLaravelClub\BlscGuide\Console\StartCommand;
 use TruLaravelClub\BlscGuide\Console\VerifyCommand;
@@ -19,9 +20,15 @@ class GuideServiceProvider extends ServiceProvider
             $app['config']->get('blsc-guide.results_path') ?? storage_path('framework/cache/blsc-guide.json'),
         ));
 
+        $this->app->singleton(Progress::class, fn ($app): Progress => new Progress(
+            $app->make(Filesystem::class),
+            $app['config']->get('blsc-guide.progress_path') ?? base_path('.blsc-guide/done'),
+        ));
+
         // Build a fresh map each time, so every request and command runs the checks again.
         $this->app->bind(FeatureMap::class, fn ($app): FeatureMap => FeatureMap::fromDirectory(
             $app['config']->get('blsc-guide.features_path'),
+            $app->make(Progress::class),
         ));
     }
 
@@ -39,6 +46,7 @@ class GuideServiceProvider extends ServiceProvider
 
         if ($this->app->runningInConsole()) {
             $this->commands([
+                DoneCommand::class,
                 GuideCommand::class,
                 StartCommand::class,
                 VerifyCommand::class,

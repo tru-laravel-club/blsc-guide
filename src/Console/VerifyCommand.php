@@ -2,6 +2,7 @@
 
 namespace TruLaravelClub\BlscGuide\Console;
 
+use Dotenv\Dotenv;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Process;
 use TruLaravelClub\BlscGuide\FeatureMap;
@@ -32,6 +33,7 @@ class VerifyCommand extends Command
         }
 
         $result = Process::path(base_path())
+            ->env($this->withoutDotenv())
             ->timeout(300)
             ->run([PHP_BINARY, 'artisan', 'test', $path], function (string $type, string $output): void {
                 $this->output->write($output);
@@ -48,5 +50,25 @@ class VerifyCommand extends Command
         $this->components->info('The acceptance test passes. Open a pull request when every step is done.');
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Remove the .env values from the test process.
+     *
+     * This command loaded .env, and a child process inherits those values.
+     * PHPUnit does not replace a variable that already exists, so the tests
+     * would run with APP_ENV=local and the developer's own database.
+     *
+     * @return array<string, false>
+     */
+    private function withoutDotenv(): array
+    {
+        $file = $this->laravel->environmentFilePath();
+
+        if (! is_file($file)) {
+            return [];
+        }
+
+        return array_fill_keys(array_keys(Dotenv::parse((string) file_get_contents($file))), false);
     }
 }

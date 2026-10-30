@@ -3,6 +3,13 @@
 use TruLaravelClub\BlscGuide\Feature;
 use TruLaravelClub\BlscGuide\FeatureMap;
 
+beforeEach(function () {
+    config([
+        'blsc-guide.features_path' => dirname(__DIR__, 2).'/features',
+        'blsc-guide.tests_path' => dirname(__DIR__, 2).'/stubs/tests',
+    ]);
+});
+
 test('the BLSC feature map has no planning mistakes', function () {
     expect(app(FeatureMap::class)->problems())->toBe([]);
 });

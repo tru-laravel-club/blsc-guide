@@ -9,3 +9,7 @@ parameters:
         - features/
 
     level: 7
+
+    # The package config folder is a Laravel config folder, so env() is allowed there.
+    configDirectories:
+        - config

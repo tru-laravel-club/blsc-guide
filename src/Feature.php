@@ -13,7 +13,7 @@ final class Feature
 
     private string $summary = '';
 
-    private Section $section = Section::Pages;
+    private Section $section = Section::Foundation;
 
     private int $level = 1;
 
@@ -25,6 +25,14 @@ final class Feature
 
     /** @var list<Step> */
     private array $steps = [];
+
+    private ?string $intro = null;
+
+    /** @var list<string> */
+    private array $reflect = [];
+
+    /** @var list<array{type: 'docs'|'video', url: string, title: string}> */
+    private array $links = [];
 
     private ?int $issue = null;
 
@@ -98,6 +106,47 @@ final class Feature
         return $this;
     }
 
+    /**
+     * Explain the big picture: what the feature does and how its parts fit together.
+     * Separate paragraphs with a blank line.
+     */
+    public function intro(string $intro): self
+    {
+        $this->intro = $intro;
+
+        return $this;
+    }
+
+    /**
+     * @param  list<string>  $questions  Questions that the contributor answers in the pull request.
+     */
+    public function reflect(array $questions): self
+    {
+        $this->reflect = $questions;
+
+        return $this;
+    }
+
+    /**
+     * Link to a page to read before the member starts.
+     */
+    public function docs(string $url, string $title = 'Laravel docs'): self
+    {
+        $this->links[] = ['type' => 'docs', 'url' => $url, 'title' => $title];
+
+        return $this;
+    }
+
+    /**
+     * Link to a video to watch before the member starts.
+     */
+    public function video(string $url, string $title): self
+    {
+        $this->links[] = ['type' => 'video', 'url' => $url, 'title' => $title];
+
+        return $this;
+    }
+
     public function issue(int $number): self
     {
         $this->issue = $number;
@@ -163,6 +212,27 @@ final class Feature
     public function stepList(): array
     {
         return $this->steps;
+    }
+
+    public function introduction(): ?string
+    {
+        return $this->intro;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function questions(): array
+    {
+        return $this->reflect;
+    }
+
+    /**
+     * @return list<array{type: 'docs'|'video', url: string, title: string}>
+     */
+    public function links(): array
+    {
+        return $this->links;
     }
 
     public function issueNumber(): ?int

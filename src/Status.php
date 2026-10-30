@@ -16,7 +16,7 @@ enum Status: string
     /** At least one feature it needs is not done yet. */
     case Blocked = 'blocked';
 
-    /** No steps are written yet. A lead must plan it first. */
+    /** No steps are written yet. A maintainer must plan it first. */
     case NotPlanned = 'not-planned';
 
     public function label(): string
