@@ -25,7 +25,7 @@ return Feature::make('weekly-themes-admin')
 
         Step::make('Create the form request')
             ->run('php artisan make:request WeeklyThemeRequest')
-            ->explain('The date must be unique, but ignore the theme that staff edit. See the slug rule in ProgramRequest. The date must also be a Thursday. Write a closure rule that calls $fail() when Carbon::parse($value)->isThursday() is false.')
+            ->explain('Write a closure rule for the date. Call $fail() when Carbon::parse($value)->isThursday() is false. Also call $fail() when another theme has the same date. Find it with whereDate(), and ignore the theme that staff edit. Do not use Rule::unique here. The date cast saves "2026-11-05 00:00:00", so it does not match "2026-11-05".')
             ->docs('https://laravel.com/docs/validation#using-closures')
             ->check(Check::classExists('App\Http\Requests\WeeklyThemeRequest')),
 

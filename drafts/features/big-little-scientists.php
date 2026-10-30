@@ -52,7 +52,7 @@ return Feature::make('big-little-scientists')
             ->check(Check::route('big-little-scientists')),
 
         Step::make('Create the view')
-            ->explain('Create resources/views/big-little-scientists.blade.php. Wrap it in <x-layouts::site>. Say that it runs Thursdays 9:00 to 10:00 AM for ages 3 to 5, that siblings are welcome, and that there is no need to sign up. Copy the card style from resources/views/programs/index.blade.php.')
+            ->explain('Create resources/views/big-little-scientists.blade.php. Wrap it in <x-layouts::site>. Say that it runs Thursdays 9:00 to 10:00 AM for ages 3 to 5, that siblings are welcome, and "No need to sign up". Copy the card style from resources/views/programs/index.blade.php.')
             ->check(Check::view('big-little-scientists')),
 
         Step::make('Add the page to the Discover menu')

@@ -29,7 +29,7 @@ return Feature::make('parties-info')
             ->check(Check::route('parties')),
 
         Step::make('Create the view')
-            ->explain('Create resources/views/parties.blade.php. First say what every party includes, the times and the price. Say that a $25 deposit holds the date. Then show each theme as a card with its name, age range and summary. Get the current prices and times from a lead.')
+            ->explain('Create resources/views/parties.blade.php. First say what every party includes, the times and the price. Say "A $25 deposit holds your date." Then show each theme as a card with its name, age range and summary. Get the current prices and times from a maintainer.')
             ->check(Check::view('parties')),
 
         Step::make('Add the page to the Discover menu')

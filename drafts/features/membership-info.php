@@ -25,7 +25,7 @@ return Feature::make('membership-info')
             ->check(Check::route('memberships')),
 
         Step::make('Create the view with the membership types')
-            ->explain('Create resources/views/memberships.blade.php and wrap it in <x-layouts::site>. Put the types in a @php array at the top, as the menus are in layouts/site.blade.php. Show each type as a card with its price and benefits. Get the current types and prices from a lead. Do not guess them.')
+            ->explain('Create resources/views/memberships.blade.php and wrap it in <x-layouts::site>. Put the types in a @php array at the top, as the menus are in layouts/site.blade.php. Show each type as a card with its price and benefits. Get the current types and prices from a maintainer. Do not guess them.')
             ->check(Check::view('memberships')),
 
         Step::make('Add the FAQ')
