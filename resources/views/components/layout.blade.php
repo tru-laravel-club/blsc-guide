@@ -24,7 +24,7 @@
         a { color: inherit; text-underline-offset: 3px; }
 
         .topbar { border-bottom: 1px solid var(--border); }
-        .topbar nav { max-width: 1100px; margin: 0 auto; padding: 14px 20px; display: flex; gap: 24px; font-size: 15px; }
+        .topbar nav { max-width: 1100px; margin: 0 auto; padding: 14px 20px; display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 15px; }
         .topbar a { text-decoration: none; color: var(--muted); }
         .topbar a:hover, .topbar a.active { color: var(--text); }
         .topbar .brand { font-weight: 700; color: var(--text); margin-right: auto; }
@@ -66,7 +66,12 @@
         pre { background: var(--code); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin: 12px 0 0; line-height: 1.6; }
         p code, li code, td code { background: var(--code); border-radius: 4px; padding: 1px 6px; }
 
-        ol.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 28px; }
+        ol.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
+        /* Grid and flex items grow to fit their content by default. Let them shrink, so a long code line scrolls inside its box. */
+        ol.steps > li, .step > *, details.reveal, .box, .card { min-width: 0; }
+        pre { max-width: 100%; }
+        main { overflow-wrap: break-word; }
+        p code, li code, td code { overflow-wrap: anywhere; }
         .step { padding: 28px; }
         .step-head { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
         .step-number { flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 15px; border: 2px solid var(--border); color: var(--muted); }
@@ -108,6 +113,11 @@
             h1 { font-size: 28px; }
             h2 { margin-top: 48px; }
             .step { padding: 20px; }
+            /* Two-column tables stack on a phone: the label above, the text below. */
+            .table td { display: block; padding: 4px 16px; border-bottom: 0; }
+            .table td:first-child { padding-top: 14px; }
+            .table td:last-child { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+            .table tr:last-child td:last-child { border-bottom: 0; }
         }
     </style>
 </head>
