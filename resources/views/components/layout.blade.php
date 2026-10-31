@@ -8,6 +8,7 @@
     <title>{{ $title ?? 'Contributor guide' }} · BLSC</title>
     <style>
         :root {
+            color-scheme: light dark;
             --bg: #f7f7f4; --card: #ffffff; --text: #1d211d; --muted: #5f665f; --border: #e2e5de;
             --done: #2f7d4f; --progress: #2368a2; --ready: #a86a00; --blocked: #b3361f; --planned: #7b817b;
             --code: #eef0ea; --think: #eaf2fa; --try: #edf6ef; --git: #f6f0e6;
@@ -69,7 +70,7 @@
         ol.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; }
         /* Grid and flex items grow to fit their content by default. Let them shrink, so a long code line scrolls inside its box. */
         ol.steps > li, .step > *, details.reveal, .box, .card { min-width: 0; }
-        pre { max-width: 100%; }
+        pre { max-width: 100%; scrollbar-width: thin; scrollbar-color: var(--muted) transparent; }
         main { overflow-wrap: break-word; }
         p code, li code, td code { overflow-wrap: anywhere; }
         .step { padding: 28px; }
