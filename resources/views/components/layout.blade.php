@@ -129,6 +129,8 @@
         <a href="{{ route('blsc-guide.start') }}" @class(['active' => request()->routeIs('blsc-guide.start')])>Start here</a>
         <a href="{{ route('blsc-guide.index') }}" @class(['active' => request()->routeIs('blsc-guide.index')])>All features</a>
         <a href="{{ route('blsc-guide.git') }}" @class(['active' => request()->routeIs('blsc-guide.git')])>Git habits</a>
+        <a href="{{ route('blsc-guide.testing') }}" @class(['active' => request()->routeIs('blsc-guide.testing')])>How testing works</a>
+        <a href="{{ route('blsc-guide.services') }}" @class(['active' => request()->routeIs('blsc-guide.services')])>Controllers and services</a>
         <a href="{{ route('blsc-guide.reactive') }}" @class(['active' => request()->routeIs('blsc-guide.reactive')])>The reactive way</a>
     </nav>
 </header>

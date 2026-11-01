@@ -188,6 +188,20 @@ test('the reactive way page compares components with controllers', function () {
         ->assertSee('Hotwire');
 });
 
+test('the testing page explains factories, seeders and fakes', function () {
+    $this->get('/guide/testing')
+        ->assertOk()
+        ->assertSeeInOrder(['A test has three parts', 'Tests use their own database', 'Factories make test data', 'Seeders fill your development database', 'Fakes stop real side effects', 'Run the tests'])
+        ->assertSee('RefreshDatabase');
+});
+
+test('the services page explains where code goes', function () {
+    $this->get('/guide/services')
+        ->assertOk()
+        ->assertSeeInOrder(['The rule', 'Why not put it all in the controller?', 'What it looks like', 'When a rule says no', 'What stays outside services', 'Name your service'])
+        ->assertSee('CategoryHasPrograms');
+});
+
 test('the start page tells new contributors the story', function () {
     $this->get('/guide/start')
         ->assertOk()

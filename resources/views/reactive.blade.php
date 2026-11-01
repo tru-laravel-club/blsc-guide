@@ -36,14 +36,14 @@
             <li><strong>The policy or gate</strong> checks the user. Both doors call it.</li>
         </ul>
     </div>
-    <pre>// app/Services/TicketCheckIn.php: the business rules, in one place
-class TicketCheckIn
+    <pre>// app/Services/TicketService.php: the business rules, in one place
+class TicketService
 {
     public function checkIn(string $code): Ticket { ... }
 }
 
 // The controller: HTTP only
-public function store(CheckInRequest $request, TicketCheckIn $tickets)
+public function store(CheckInRequest $request, TicketService $tickets)
 {
     $ticket = $tickets->checkIn($request->validated('code'));
 
@@ -51,7 +51,7 @@ public function store(CheckInRequest $request, TicketCheckIn $tickets)
 }
 
 // The Livewire component: the same service, without a page load
-public function check(TicketCheckIn $tickets)
+public function check(TicketService $tickets)
 {
     $this->authorize('access-admin');
     $this->validate((new CheckInRequest)->rules());

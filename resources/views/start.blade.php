@@ -42,7 +42,7 @@
         <p>We build the website in six phases. Each phase is a set of features. Some features need others first, so the guide shows which features you can start now.</p>
     </div>
     <ul class="list">
-        <li><strong>Foundation.</strong> The base that every other feature uses: the layout, accounts, staff access, programs and child profiles.</li>
+        <li><strong>Foundation.</strong> The base that every other feature uses: the layout, staff accounts, programs and their pages, the first staff pages and child profiles. The starter kit gives login. You build the rest.</li>
         <li><strong>Catalog.</strong> What is on: program categories, sessions, and how a visitor signs up for each program.</li>
         <li><strong>Content.</strong> Pages and posts that staff write in a visual editor, made safe on the server.</li>
         <li><strong>Forms.</strong> A form builder, so staff can ask new questions without a developer. Parents type their details once.</li>
@@ -79,8 +79,10 @@
     <h2>Your first hour</h2>
     <ol class="list">
         <li>Read <a href="{{ route('blsc-guide.git') }}">Git habits</a>.</li>
+        <li>Read <a href="{{ route('blsc-guide.testing') }}">How testing works</a>. Every feature starts with a test, so learn to read one first.</li>
+        <li>Read <a href="{{ route('blsc-guide.services') }}">Controllers and services</a>. It explains where code goes. Every feature that saves data follows it.</li>
         <li>Skim <a href="{{ route('blsc-guide.reactive') }}">The reactive way</a>. Most features use controllers. This page explains when a feature uses Livewire instead, and why.</li>
-        <li>Read the features that are already done, such as <a href="{{ route('blsc-guide.show', 'layout') }}">Site layout and menus</a> and <a href="{{ route('blsc-guide.show', 'programs') }}">Programs and sessions</a>. They show the patterns that you will copy.</li>
-        <li>Pick a Level 1 feature that is <strong>Ready</strong>, and ask for its issue.</li>
+        <li>Read <a href="{{ route('blsc-guide.show', 'accounts') }}">Accounts and login</a>. The starter kit gives login and the account pages, so this is the one feature that you only read.</li>
+        <li>Pick a Level 1 feature that is <strong>Ready</strong>, and ask for its issue. The first ones are in Foundation, such as <a href="{{ route('blsc-guide.show', 'layout') }}">Site layout and menus</a>. The Foundation features build the patterns that every later feature copies.</li>
     </ol>
 </x-blsc-guide::layout>
