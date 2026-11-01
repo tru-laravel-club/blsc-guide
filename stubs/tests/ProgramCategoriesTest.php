@@ -1,8 +1,10 @@
 <?php
 
+use App\Exceptions\CategoryHasPrograms;
 use App\Models\Category;
 use App\Models\Program;
 use App\Models\User;
+use App\Services\CategoryService;
 
 /*
 | Acceptance test for the "Program categories" feature.
@@ -99,6 +101,16 @@ test('an empty category can be deleted', function () {
         ->assertRedirect(route('admin.categories.index'));
 
     expect($category->fresh())->toBeNull();
+});
+
+test('the category service refuses to delete a category with programs', function () {
+    $category = Category::factory()->create();
+    Program::factory()->for($category)->create();
+
+    expect(fn () => app(CategoryService::class)->delete($category))
+        ->toThrow(CategoryHasPrograms::class);
+
+    expect($category->fresh())->not->toBeNull();
 });
 
 test('a program is saved in a category and shows it', function () {

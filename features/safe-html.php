@@ -89,7 +89,7 @@ return Feature::make('safe-html')
             ->explain(<<<'TEXT'
                 Before you commit, look at what Composer changed. Run `git status`. Two files changed, and one big folder did not show up.
 
-                `composer.json` lists what the app needs. Composer added a line such as `"symfony/html-sanitizer": "^7.4"`. This is a version constraint. Versions have three numbers: major, minor and patch, such as `7.4.22`. A new major version can break your code. A minor or patch version must not. The caret `^7.4` means "7.4 or later, but not 8.0". So Composer can install bug fixes, but never a breaking change.
+                `composer.json` lists what the app needs. Composer added a line such as `"symfony/html-sanitizer": "^7.4"`. The app sets `sort-packages`, so Composer may also sort the list again. That moves a line, but changes nothing. This is a version constraint. Versions have three numbers: major, minor and patch, such as `7.4.22`. A new major version can break your code. A minor or patch version must not. The caret `^7.4` means "7.4 or later, but not 8.0". So Composer can install bug fixes, but never a breaking change.
 
                 `composer.lock` lists the exact version of every package that Composer installed, including the packages that your packages need. Commit it. Other contributors, the checks on GitHub and Laravel Cloud run `composer install`, which installs exactly the versions in the lock file. So everybody runs the same code.
 
@@ -149,8 +149,9 @@ return Feature::make('safe-html')
             ->check(Check::fileContains('config/editor.php', "'formats'")),
 
         Step::make('Build the sanitizer from the config')
+            ->run('php artisan make:class Support/SafeHtmlSanitizer')
             ->explain(<<<'TEXT'
-                Create `app/Support/SafeHtmlSanitizer.php`. The constructor builds a Symfony `HtmlSanitizer` from the config. The `clean(string $html): string` method returns the clean HTML.
+                Create `app/Support/SafeHtmlSanitizer.php` with the command below. The constructor builds a Symfony `HtmlSanitizer` from the config. The `clean(string $html): string` method returns the clean HTML.
 
                 Build the `HtmlSanitizerConfig` in four parts:
 
@@ -167,6 +168,8 @@ return Feature::make('safe-html')
             ->hint('Look at the "Configuration" part of the Symfony docs. `defaultAction()`, `dropElement()`, `allowElement()`, `allowLinkSchemes()` and `allowRelativeLinks()` are the methods that you need.')
             ->hint('`config(\'editor.formats\')` returns `mixed` for PHPStan. Add `/** @var array<string, array<string, list<string>>> $formats */` above the variable that holds it.')
             ->code(<<<'PHP'
+                private HtmlSanitizer $sanitizer;
+
                 public function __construct()
                 {
                     $config = (new HtmlSanitizerConfig)
@@ -296,6 +299,7 @@ return Feature::make('safe-html')
             ->think('Escaped text is always safe HTML. Why is `e()` enough here, with no sanitizer?')
             ->hint('`DB::table(\'programs\')->whereNotNull(\'description\')->eachById(function (object $program) { ... })` reads the rows in small groups.')
             ->hint('`preg_split(\'/\R{2,}/\', $text)` splits the text at each blank line. `\R` matches any kind of line break.')
+            ->hint('In the factory, `fake()->paragraphs(2)` returns `array|string` for PHPStan. Two calls to `fake()->paragraph()`, each in `<p>` tags, are simpler.')
             ->code(<<<'PHP'
                 DB::table('programs')->whereNotNull('description')->eachById(function (object $program) {
                     $paragraphs = preg_split('/\R{2,}/', trim($program->description)) ?: [];
@@ -325,7 +329,7 @@ return Feature::make('safe-html')
 
                 `{{ }}` escapes the value. `{!! !!}` prints it as it is. Use `{!! !!}` only for an attribute with the `SafeHtml` cast. For anything else, a reviewer must refuse the pull request. Add a short Blade comment above the line, so the next reader knows why it is safe.
 
-                Tailwind removes the default styles of HTML tags, so a list has no bullets and a heading looks like text. Add a `.rich-text` class to `resources/css/app.css` in `@layer components`. Give `h2`, `ul`, `ol`, `blockquote` and `a` inside it a style with `@apply`. Pages and posts use the same class later.
+                Tailwind removes the default styles of HTML tags, so a list has no bullets and a heading looks like text. Add a `@layer components` block at the end of `resources/css/app.css`, with a `.rich-text` class in it. Give `h2`, `ul`, `ol`, `blockquote` and `a` inside it a style with `@apply`. Pages and posts use the same class later.
 
                 The CSS is built by tools from npm, the package manager for JavaScript. npm works like Composer: `package.json` lists the tools, `package-lock.json` holds the exact versions, and `node_modules/` is never committed. After you pull new code, run `npm ci`. It installs exactly the versions in the lock file, as `composer install` does. Then run `npm run build`. It runs the `build` script in `package.json`, which writes the finished CSS and JavaScript to `public/build`.
                 TEXT)

@@ -11,7 +11,7 @@ return Feature::make('profile-answers')
     ->level(3)
     ->needs(['submissions', 'child-profiles'])
     ->summary('Answers to child and family fields are saved to the profile and filled in next time. Parents confirm sensitive answers each year.')
-    ->teaches(['Polymorphic relationships', 'JSON casts', 'Service classes', 'Scoped route bindings', 'Model events', 'Overriding a package view'])
+    ->teaches(['Polymorphic relationships', 'JSON casts', 'Service classes', 'Scoped route bindings', 'Model events'])
     ->test('ProfileAnswersTest.php')
     ->intro(<<<'TEXT'
         A family signs up for a summer camp, a Saturday club and a homeschool class. Each form asks the same questions: the school, the grade, the allergies, the emergency contact. Today the parent types every answer again on every form. In this feature, the parent types each answer once.
@@ -20,9 +20,9 @@ return Feature::make('profile-answers')
 
         A new model, `ProfileValue`, holds one saved answer. It has an **owner**, the child or the parent account. One table holds both kinds, so the owner is a polymorphic relationship: the row stores the type of the owner and its ID. It also stores the `field_id`, the `value` as JSON, and `confirmed_at`, the date that the parent last said "this is correct".
 
-        This is the path of a request. A parent opens `/forms/camp-health?child=3`. `FormController::show()` checks that child 3 belongs to the parent. Then `ProfileValues::fill()` adds a `value` to each child and family field, and sets `stale` on a sensitive answer that is too old. The form shows the values, and asks "Is this still correct?" next to each stale answer. On submit, the controller calls `fill()` again, because only the server decides what is stale. `FormRules` adds a rule: the parent must check the confirmation box. The submission keeps its own copy of the answers. Then `ProfileValues::save()` updates the profile.
+        This is the path of a request. A parent opens `/forms/camp-health?child=3`. `FormController::show()` checks that child 3 belongs to the parent, and calls `FormSubmissionService::fields()`. That method asks a new service, `ProfileValueService::fill()`, to add a `value` to each child and family field, and to set `stale` on a sensitive answer that is too old. The form shows the values, and asks "Is this still correct?" next to each stale answer. On submit, the controller calls `fields()` again, because only the server decides what is stale. `FormRules` adds a rule: the parent must check the confirmation box. Then `FormSubmissionService::submit()` saves the submission, which keeps its own copy of the answers, and calls `ProfileValueService::save()` to update the profile.
 
-        Keep `ProfileValues` out of the controller. The Registrations feature calls `fill()` and `save()` too, for the form of a program. One service means one set of rules for every form.
+        Remember the rule: **controllers do HTTP, services do the work**. In "Submissions and versions", `FormSubmissionService` already took a user and a child, for this feature. Now it uses them, and the controllers hardly change. The Registrations feature calls the same service later, so a registration fills in and saves the answers with no extra code. One service means one set of rules for every form.
 
         Last, the parent controls the data. A "Saved answers" page for each child shows every saved answer. The parent changes or deletes each one. A policy stops other families, and deleting a child deletes its answers. Many of these answers describe children, so the app keeps them only while the family wants them.
         TEXT)
@@ -31,7 +31,7 @@ return Feature::make('profile-answers')
     ->docs('https://laravel.com/docs/eloquent-mutators#array-and-json-casting', 'Laravel docs: Array and JSON casting')
     ->reflect([
         'A parent updates the allergies in March. What does the January registration show? Why?',
-        'On submit, the controller calls `fill()` again to find the stale answers. Why does it not read them from a hidden input in the form?',
+        'On submit, the controller calls `fields()` again to find the stale answers. Why does it not read them from a hidden input in the form?',
         'A parent clears the "Medical notes" box and sends the form. The app deletes the saved answer. Would it be better to keep the old answer? Who could be hurt in each case?',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
     ])
@@ -130,6 +130,8 @@ return Feature::make('profile-answers')
                 The `owner_id` column has no foreign key, because it can point to two tables. So the database does not delete the answers of a deleted child. Do it in the model. In `Child`, add a `booted()` method with a `deleting` event that deletes the profile values of the child.
 
                 The parent can also delete the whole account. The database then deletes the children through their foreign key, and no model event runs. So in `User`, add a `deleting` event too. It deletes the family answers and then each child through the model, so the event of each child runs.
+
+                Why a model event, and not a method in a service? The project keeps model events only for clean-up that must happen however a row is deleted. A child is deleted on the children page, and also with the account. Write that reason in the comment above `booted()`, so the next contributor does not move it.
                 TEXT)
             ->think('Why does `$user->children->each->delete()` delete the answers of the children, but `$user->children()->delete()` does not?')
             ->hint('Copy the `children()` method in `User`. Change `HasMany` to `MorphMany` and `hasMany` to `morphMany`.')
@@ -137,6 +139,9 @@ return Feature::make('profile-answers')
             ->code(<<<'PHP'
                 /**
                  * Delete the saved answers of a child together with the child.
+                 *
+                 * This is a model event and not a service method, because it must run however the child is deleted:
+                 * by the parent, or with the parent's account. The owner_id column has no foreign key, so the database cannot do it.
                  */
                 protected static function booted(): void
                 {
@@ -164,10 +169,12 @@ return Feature::make('profile-answers')
                 Check::fileContains('app/Models/User.php', 'function profileValues'),
             )),
 
-        Step::make('Write the ProfileValues service')
-            ->run('php artisan make:class Forms/ProfileValues')
+        Step::make('Write the ProfileValueService')
+            ->run('php artisan make:class Services/ProfileValueService')
             ->explain(<<<'TEXT'
                 This class is the heart of the feature. Two pages use it now and later: the public form and the registration flow. So it does not read the request. It takes the field definitions, the user and the child, and nothing else.
+
+                Run the command below. It makes `app/Services/ProfileValueService.php`. Write two methods.
 
                 `fill(array $fields, User $user, ?Child $child): array` returns the same definitions with two new keys. `value` is the saved answer, or `null`. `stale` is `true` when the parent must confirm the answer. Load the answers of the child and of the family one time each, keyed by the field key. Then, for each field, its `scope` tells you where to look. A sign-up field never gets a value.
 
@@ -175,9 +182,11 @@ return Feature::make('profile-answers')
 
                 Both methods need the owner of a field. Put that in one private method with a `match` on the scope. Then the rule "child fields belong to the child" lives in one place.
 
+                `save()` finds each field by its key, not by an ID in the definition. A form version is a copy of the definitions, and a definition has no `id`. The key is the name that never changes.
+
                 Last, open `app/Forms/FormRules.php`. Add `value?: mixed` and `stale?: bool` to the `Definition` type, so PHPStan knows the new keys.
                 TEXT)
-            ->think('`save()` finds each field by its key, not by an ID in the definition. Why do the definitions in a form version have no `id`?')
+            ->think('`FormController` and the registration flow both need these answers. Why is this code in a service, and not in `FormController`? What would happen with two copies?')
             ->hint('`$child?->profileValues()->with(\'field\')->get()->keyBy(\'field.key\')` gives the answers of a child, keyed by the key of the field. `keyBy()` reads a dot path.')
             ->hint('`Field::whereIn(\'key\', array_column($fields, \'key\'))->pluck(\'id\', \'key\')` finds the ID of each field in one query.')
             ->hint('`$owner->profileValues()->updateOrCreate([\'field_id\' => $id], [\'value\' => $answer, \'confirmed_at\' => now()])` changes the old answer, or creates one.')
@@ -214,19 +223,19 @@ return Feature::make('profile-answers')
 
                 `$user = App\Models\User::first(); $child = $user->children()->create(['name' => 'Sam', 'birthdate' => '2017-05-01']);`
 
-                `$fields = App\Models\Field::whereIn('key', ['school', 'allergies', 'emergency_phone'])->get()->map->definition()->all(); $p = app(App\Forms\ProfileValues::class);`
+                `$fields = App\Models\Field::whereIn('key', ['school', 'allergies', 'emergency_phone'])->get()->map->definition()->all(); $p = app(App\Services\ProfileValueService::class);`
 
                 `$p->save($fields, ['school' => 'Westsyde Elementary', 'allergies' => 'Peanuts', 'emergency_phone' => '250-555-0100'], $user, $child);`
 
                 Now run `collect($p->fill($fields, $user, $child))->pluck('value', 'key')`. You see all three answers. Run it again with `null` instead of `$child`. You see only the emergency phone, because it is a family field.
                 TEXT)
-            ->commit('Add the ProfileValues service')
+            ->commit('Add the ProfileValueService')
             ->docs('https://laravel.com/docs/eloquent#upserts', 'Laravel docs: Upserts and updateOrCreate')
             ->docs('https://laravel.com/docs/eloquent-relationships#the-create-method', 'Laravel docs: Saving related models')
             ->docs('https://laravel.com/docs/container#automatic-injection', 'Laravel docs: Automatic injection')
             ->check(Check::all(
-                Check::fileContains('app/Forms/ProfileValues.php', 'function fill'),
-                Check::fileContains('app/Forms/ProfileValues.php', 'function save'),
+                Check::fileContains('app/Services/ProfileValueService.php', 'function fill'),
+                Check::fileContains('app/Services/ProfileValueService.php', 'function save'),
             )),
 
         Step::make('Require a confirmation for a stale answer')
@@ -235,7 +244,7 @@ return Feature::make('profile-answers')
 
                 `FormRules::for()` already builds the rules from the definitions. Now a definition can carry `stale`. When it is `true`, add the rule `accepted` for `confirm.` plus the key. The dot is how Laravel names a value inside an array.
 
-                The default message would say "The confirm.allergies field must be accepted." Parents do not know what that means. Add a static `messages()` method to `FormRules` with one wildcard message for every confirmation: `'confirm.*.accepted'`. The form controller passes it to `validate()`.
+                The default message would say "The confirm.allergies field must be accepted." Parents do not know what that means. Add a static `messages()` method to `FormRules` with one wildcard message for every confirmation: `'confirm.*.accepted'`. The form controller passes it to `validate()` in the next step.
                 TEXT)
             ->think('The parent changes the allergies from "Peanuts" to "Peanuts and eggs". Must they still check the box? Is that a good rule, or would you change it?')
             ->hint('Put the new rule inside the `foreach` in `for()`, after the checkbox rule: `if ($field[\'stale\'] ?? false) { ... }`.')
@@ -264,35 +273,54 @@ return Feature::make('profile-answers')
 
         Step::make('Choose a child, fill in the form, and save the answers')
             ->explain(<<<'TEXT'
-                Now connect the service to `FormController`. Type-hint `ProfileValues $profile` in `show()` and `store()`. Laravel makes the object for you.
+                Now connect the new service to `FormSubmissionService`. One service can use another. Ask for it in the constructor: `public function __construct(private ProfileValueService $profile) {}`. Laravel builds `FormSubmissionService` for the controller, sees the constructor, and builds `ProfileValueService` first.
 
-                First, find the child. Add a private method `chosenChild()`. It reads the `child` query parameter, and looks for the child only in `$request->user()->children()`. Use `findOrFail()`: a child of another family is "not found" for this parent. A guest has no children, so the method returns `null`.
+                Change the two methods that you wrote in "Submissions and versions":
 
-                In `show()`, call `fill()` for a signed-in user. A guest gets the plain definitions. Pass the children to the view too, but only when the form has a child field. A form with only family fields does not need to ask about a child.
+                - `fields()` calls `$this->profile->fill()` for a signed-in user. A guest gets the plain definitions of the version.
+                - `submit()` creates the submission as before, and then calls `$this->profile->save()` with the answers of the submission, when there is a user. A guest has no profile. Keep any other code in `submit()`, such as the notice to staff.
 
-                In `store()`, call `fill()` again before you validate. The server decides which answers are stale. A browser can leave out a checkbox or add a hidden input, but it cannot change the dates in your database. Validate with `FormRules::for($fields)` and `FormRules::messages()`. Create the submission as before: it keeps its own copy of the answers. Then call `save()` with the answers of the submission.
+                Then the controller. It does only HTTP work: it finds the child in the request and passes it on. Add a private method `chosenChild()` to `FormController`. It reads the `child` query parameter, and looks for the child only in `$request->user()->children()`. Use `findOrFail()`: a child of another family is "not found" for this parent. A guest has no children, so the method returns `null`.
+
+                In `show()`, pass the user and the child to `fields()`. Pass the children to the view too, but only when the form has a child field. A form with only family fields does not need to ask about a child.
+
+                In `store()`, call `fields()` again before you validate. The server decides which answers are stale. A browser can leave out a checkbox or add a hidden input, but it cannot change the dates in your database. Validate with `FormRules::for($fields)` and `FormRules::messages()`. Then call `submit()` with the user and the child.
                 TEXT)
             ->think('The submission and the profile both store "Peanuts". Later the parent changes the profile to "None". Which copy must the camp staff see for the January camp? Why are there two copies?')
             ->hint('`$request->filled(\'child\')` is false when the parameter is missing or empty. `$request->integer(\'child\')` reads it as a number.')
             ->hint('`collect($version->fields)->contains(\'scope\', FieldScope::Child->value)` tells you if the form has a child field.')
-            ->hint('Call `save()` only when `$request->user()` is not `null`. A guest has no profile.')
+            ->hint('In `save()`, pass `$version->fields`, not the filled fields. The profile needs the definitions, not the old values.')
             ->code(<<<'PHP'
-                public function store(Request $request, Form $form, ProfileValues $profile): RedirectResponse
+                // app/Services/FormSubmissionService.php
+                public function __construct(private ProfileValueService $profile) {}
+
+                public function fields(FormVersion $version, ?User $user = null, ?Child $child = null): array
+                {
+                    return $user ? $this->profile->fill($version->fields, $user, $child) : $version->fields;
+                }
+
+                public function submit(FormVersion $version, array $validated, ?User $user = null, ?Child $child = null): Submission
+                {
+                    $submission = $version->submissions()->create([/* as before */]);
+
+                    if ($user) {
+                        $this->profile->save($version->fields, $submission->answers, $user, $child);
+                    }
+
+                    return $submission;
+                }
+
+                // app/Http/Controllers/FormController.php
+                public function store(Request $request, Form $form, FormSubmissionService $submissions): RedirectResponse
                 {
                     $version = $form->currentVersion ?? abort(404);
                     $user = $request->user();
                     $child = $this->chosenChild($request);
-                    $fields = $user ? $profile->fill($version->fields, $user, $child) : $version->fields;
+                    $fields = $submissions->fields($version, $user, $child);
 
                     $validated = $request->validate(FormRules::for($fields), FormRules::messages(), array_column($fields, 'label', 'key'));
 
-                    $submission = $version->submissions()->create([/* as before */]);
-
-                    if ($user) {
-                        $profile->save($version->fields, $submission->answers, $user, $child);
-                    }
-
-                    // The notification, as before.
+                    $submissions->submit($version, $validated, $user, $child);
 
                     return to_route('forms.thanks', $form);
                 }
@@ -313,35 +341,35 @@ return Feature::make('profile-answers')
             ->tryIt('Run `php artisan test tests/Feature/ProfileAnswersTest.php --filter="saved to the child"`. The rule "a parent\'s answers are saved to the child and to the family" passes. The rules that look at the page still fail, because the form does not show the values yet.')
             ->commit('Fill in and save profile answers on forms')
             ->docs('https://laravel.com/docs/requests#retrieving-input-from-the-query-string', 'Laravel docs: Input from the query string')
-            ->docs('https://laravel.com/docs/controllers#method-injection', 'Laravel docs: Method injection')
+            ->docs('https://laravel.com/docs/container#automatic-injection', 'Laravel docs: Automatic injection')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/11', 'Laravel From Scratch, episode 11: Request Validation')
-            ->check(Check::fileContains('app/Http/Controllers/FormController.php', 'ProfileValues')),
+            ->check(Check::all(
+                Check::fileContains('app/Services/FormSubmissionService.php', 'ProfileValueService'),
+                Check::fileContains('app/Http/Controllers/FormController.php', 'function chosenChild'),
+            )),
 
         Step::make('Show the saved answers in the fields')
-            ->run('php artisan vendor:publish --tag=april-view-textarea')
             ->explain(<<<'TEXT'
                 Each field component in `resources/views/components/forms` reads `old($field['key'])`. That is the input after a validation error. Give `old()` a second argument, the saved value: `old($field['key'], $field['value'] ?? null)`. The input after an error still wins, and the saved value comes next. Do it in all five components. For checkboxes, the default is `[]`. For consent, it is `false`.
 
-                Now test the long text field. It stays empty. Open `vendor/yungifez/april-ui/resources/views/components/textarea.blade.php`. The `<textarea>` has no `{{ $slot }}`, so April UI drops the text between the tags. The same problem empties the help text on the staff edit pages.
-
-                Never change files in `vendor`. Composer replaces them. Laravel lets an app override one view of a package instead. Run the command below. It copies the view to `resources/views/vendor/april/components/textarea.blade.php`, and Laravel uses your copy. Put `{{ $slot }}` between the tags.
-
-                A copy does not get the fixes of new April UI versions. So also tell the April UI maintainers about the problem. When they fix it, delete your copy.
+                The long text component is a plain `<textarea>`, because `<april:textarea>` in April UI 1.3.6 shows no value. So the value goes between the tags, not in a `value` attribute.
                 TEXT)
             ->think('Why does `old()` come first and the saved value second? What would the parent see after a validation error if it were the other way?')
             ->hint('In `choice.blade.php`, change `@selected(old($field[\'key\']) === $option[\'value\'])` in the same way.')
-            ->hint('The end of the published textarea becomes `])}}>{{ $slot }}</textarea>`.')
+            ->hint('In `checkboxes.blade.php`, the saved value is a list: `(array) old($field[\'key\'], $field[\'value\'] ?? [])`.')
             ->code(<<<'PHP'
+                {{-- resources/views/components/forms/input.blade.php --}}
+                :value="old($field['key'], $field['value'] ?? null)"
+
                 {{-- resources/views/components/forms/long-text.blade.php --}}
-                <april:textarea id="{{ $field['key'] }}" name="{{ $field['key'] }}" rows="4" class="w-full" :required="$field['required']">{{ old($field['key'], $field['value'] ?? null) }}</april:textarea>
+                <textarea id="{{ $field['key'] }}" name="{{ $field['key'] }}" ...>{{ old($field['key'], $field['value'] ?? null) }}</textarea>
                 PHP)
-            ->tryIt('Log in as staff and open Fields. Edit a field that has help text. Before the fix, the help text box is empty. After the fix, you see the text.')
+            ->tryIt('Run `php artisan test tests/Feature/ProfileAnswersTest.php --filter="fills in"`. The rule "the second form fills in the answers from the first" passes now.')
             ->commit('Show saved answers in the form fields')
             ->docs('https://laravel.com/docs/requests#retrieving-old-input', 'Laravel docs: Retrieving old input')
-            ->docs('https://laravel.com/docs/packages#overriding-package-views', 'Laravel docs: Overriding package views')
             ->check(Check::all(
+                Check::fileContains('resources/views/components/forms/input.blade.php', "\$field['value']"),
                 Check::fileContains('resources/views/components/forms/long-text.blade.php', "\$field['value']"),
-                Check::fileContains('resources/views/vendor/april/components/textarea.blade.php', '{{ $slot }}'),
             )),
 
         Step::make('Ask which child, and ask to confirm')
@@ -369,7 +397,9 @@ return Feature::make('profile-answers')
                 @endif
                 PHP)
             ->tryIt(<<<'TEXT'
-                Log in as `staff@example.com` and open Forms. Create a form "Camp health" with the fields School, Allergies and Emergency contact phone. Publish it.
+                Staff get a form editor in a later feature. For now, make a form in `php artisan tinker`. Tests make forms in the same way:
+
+                `$form = App\Models\Form::create(['name' => 'Camp health', 'slug' => 'camp-health']); collect(['school', 'allergies', 'emergency_phone'])->each(fn ($key, $position) => $form->fields()->attach(App\Models\Field::firstWhere('key', $key), ['position' => $position, 'required' => false])); app(App\Services\FormService::class)->publish($form);`
 
                 Log in as `test@example.com` and add two children. Open `/forms/camp-health`, choose the first child, fill in the form and send it. Open the form again and choose the same child: the answers are there. Choose the other child: only the emergency phone is there.
 
@@ -392,7 +422,9 @@ return Feature::make('profile-answers')
 
                 Scoping checks that the answer belongs to the child. It does not check that the child belongs to the parent. The `ChildPolicy` already answers that question. Call `Gate::authorize('update', $child)` in each method. The parent may change the child, so the parent may change its answers.
 
-                In `update()`, validate the new answer with the rules of its field. `FormRules::for()` already builds them from a definition: `$profileValue->field->definition(required: true)`. Then save the value and set `confirmed_at` to now. To remove an answer, the parent uses Delete.
+                In `update()`, validate the new answer with the rules of its field. `FormRules::for()` already builds them from a definition: `$profileValue->field->definition(required: true)`. To remove an answer, the parent uses Delete.
+
+                The controller does not change the row itself. Add two more methods to `ProfileValueService`. `update(ProfileValue $profileValue, mixed $value): ProfileValue` saves the value and sets `confirmed_at` to now: the parent looked at the answer today. `delete(ProfileValue $profileValue): void` deletes it. The controller validates, calls one method, and redirects.
                 TEXT)
             ->think('Without `->scoped()`, what could a parent do with the URL `/children/3/answers/99`, when child 3 is their own but answer 99 belongs to another family?')
             ->hint('`->parameters([\'answers\' => \'profileValue\'])` renames the parameter. Laravel then guesses the relationship `profileValues()` from it.')
@@ -403,18 +435,23 @@ return Feature::make('profile-answers')
                     ->parameters(['answers' => 'profileValue'])
                     ->scoped();
 
+                // In ProfileValueService:
+                public function update(ProfileValue $profileValue, mixed $value): ProfileValue
+                {
+                    $profileValue->update(['value' => $value, 'confirmed_at' => now()]);
+
+                    return $profileValue;
+                }
+
                 // In ProfileValueController:
-                public function update(Request $request, Child $child, ProfileValue $profileValue): RedirectResponse
+                public function update(Request $request, Child $child, ProfileValue $profileValue, ProfileValueService $profile): RedirectResponse
                 {
                     Gate::authorize('update', $child);
 
                     $field = $profileValue->field->definition(required: true);
                     $validated = $request->validate(FormRules::for([$field]), [], [$field['key'] => $field['label']]);
 
-                    $profileValue->update([
-                        'value' => $validated[$field['key']],
-                        'confirmed_at' => now(),
-                    ]);
+                    $profile->update($profileValue, $validated[$field['key']]);
 
                     return to_route('children.answers.index', $child)->with('status', 'Answer saved.');
                 }
@@ -425,7 +462,10 @@ return Feature::make('profile-answers')
             ->docs('https://laravel.com/docs/controllers#restful-scoping-resource-routes', 'Laravel docs: Scoping resource routes')
             ->docs('https://laravel.com/docs/routing#implicit-model-binding-scoping', 'Laravel docs: Implicit model binding scoping')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/18', 'Laravel From Scratch, episode 18: Authorization Using Policies')
-            ->check(Check::route('children.answers.index', 'children.answers.update', 'children.answers.destroy')),
+            ->check(Check::all(
+                Check::route('children.answers.index', 'children.answers.update', 'children.answers.destroy'),
+                Check::fileContains('app/Services/ProfileValueService.php', 'function delete'),
+            )),
 
         Step::make('Build the Saved answers page')
             ->explain(<<<'TEXT'
@@ -455,7 +495,7 @@ return Feature::make('profile-answers')
 
                 The old form tests still pass. A guest gets the same form as before, and a form without child or family fields saves nothing to a profile. That is how you know that the change is safe for the contact form.
 
-                In your pull request, tell reviewers two things. The pull request has a migration. And it overrides one April UI view, with a link to the problem that you reported to April UI.
+                In your pull request, tell reviewers that it has a migration, so they run `php artisan migrate`.
                 TEXT)
             ->think('Which rule protects the privacy of children the most? Remove the `findOrFail()` scope from `chosenChild()` for a moment, and run the test. Which rule fails?')
             ->tryIt('Run `composer ci:check`. Pint, PHPStan and all the tests pass.')

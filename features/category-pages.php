@@ -53,11 +53,13 @@ return Feature::make('category-pages')
             ->explain(<<<'TEXT'
                 Make a public `CategoryController` with the command below. It is not the one in `Admin`. It has two methods. `index()` lists all categories with `ordered()`. `show()` lists the published programs of one category.
 
-                Move the code of `ProgramController::index()` into `CategoryController::show()`. Then delete `index()` from `ProgramController`. The old method took a slug and called `firstOrFail()`. Now route model binding does that work. Type the parameter as `Category $category`, and Laravel finds it.
+                Copy the code of `ProgramController::index()` into `CategoryController::show()`. The old method took a slug and called `firstOrFail()`. Now route model binding does that work. Type the parameter as `Category $category`, and Laravel finds it.
 
-                Add two routes in the Discover part of `routes/web.php`: `/programs` named `programs.index`, and `/programs/{category:slug}` named `categories.show`. The `:slug` part tells Laravel to find the category by its slug, not by its ID.
+                Add two routes next to the program routes in `routes/web.php`: `/programs` named `programs.index`, and `/programs/{category:slug}` named `categories.show`. The `:slug` part tells Laravel to find the category by its slug, not by its ID.
 
-                Leave the `/camps` and `/clubs` routes for now. The menu still uses them. You remove them in a later step.
+                Leave the `/camps` and `/clubs` routes and `ProgramController::index()` for now. The menu still uses them. You remove them in a later step.
+
+                Look at the program route, `/programs/{program:slug}`. It has the same shape as your new category route, and Laravel uses the first route that matches. So `/programs/quarks` now looks for a category, and the program pages show 404. Some old tests fail now. The step "Move each program page under its category" fixes this.
                 TEXT)
             ->think('The old code called `firstOrFail()`. What does Laravel do now when the slug in the address matches no category?')
             ->hint('Look at the old `ProgramController::index()`. Its body moves almost unchanged.')
@@ -77,6 +79,8 @@ return Feature::make('category-pages')
             ->run('mkdir -p resources/views/categories && git mv resources/views/programs/index.blade.php resources/views/categories/show.blade.php')
             ->explain(<<<'TEXT'
                 The page that lists the programs of one category is now a category page. So move its view to `categories/show.blade.php` with the command below. `git mv` needs the new folder first, and it keeps the history of the file.
+
+                `ProgramController::index()` still returns the view `programs.index`, which is gone now. Change it to `categories.show`, so `/camps` and `/clubs` keep working until you remove them.
 
                 The category page lists each program with its upcoming sessions. Show all upcoming sessions of a program, not only the next one. Keep the text "There are no ... listed right now." for an empty category.
 
@@ -172,11 +176,11 @@ return Feature::make('category-pages')
 
         Step::make('Remove the old routes and fix the old tests')
             ->explain(<<<'TEXT'
-                Now nothing needs `/camps` and `/clubs`. Delete both routes from `routes/web.php`. Then search for the old names: `grep -rn "clubs.index\|camps.index" app resources routes tests`.
+                Now nothing needs `/camps` and `/clubs`. Delete both routes from `routes/web.php`, and delete `ProgramController::index()`. Then search for the old names: `grep -rn "clubs.index\|camps.index" app resources routes tests`.
 
                 Run all the tests. Some old tests fail. Read each failure before you change it. These tests break on purpose, because the addresses changed:
 
-                - `tests/Feature/ProgramCatalogTest.php` opens `clubs.index` and `camps.index`. Change them to `route('categories.show', ...)` with the category slug or model.
+                - `tests/Feature/ProgramCatalogTest.php` opens `clubs.index` and `camps.index`. Change them to `route('categories.show', ...)` with the category slug or model. The factory state `club()` puts the programs in the category with the slug `clubs`, so `route('categories.show', 'clubs')` works.
                 - `tests/Feature/ProgramCategoriesTest.php` opens `clubs.index` in its last rule. Use `route('categories.show', $clubs)`.
                 - Each call to `route('programs.show', $program)` needs the category too: `route('programs.show', [$program->category, $program])`.
 
@@ -188,7 +192,7 @@ return Feature::make('category-pages')
             ->hint('`php artisan test --stop-on-failure` stops at the first failure. Fix one at a time.')
             ->tryIt('Run `grep -rn "clubs.index\|camps.index" app resources routes tests`. You see only the last rule of `CategoryPagesTest.php`, which checks that the routes are gone. Then run `php artisan test`. All the tests pass.')
             ->commit('Remove the camps and clubs routes')
-            ->check(fn (): bool => ! Route::has('clubs.index') && ! Route::has('camps.index')),
+            ->check(fn (): bool => Route::has('categories.show') && ! Route::has('clubs.index') && ! Route::has('camps.index')),
 
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify category-pages')

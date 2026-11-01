@@ -12,7 +12,7 @@ return Feature::make('program-categories')
     ->level(3)
     ->needs(['programs-admin'])
     ->summary('Staff manage categories, such as Camps, Clubs and Homeschool. Today the kinds of program are a fixed list in the ProgramType enum. After this feature, staff add a new kind without a developer.')
-    ->teaches(['Data migrations', 'Foreign keys', 'belongsTo and hasMany', 'Factory states', 'Resource controllers', 'Refactoring'])
+    ->teaches(['Data migrations', 'Foreign keys', 'belongsTo and hasMany', 'Factory states', 'Resource controllers', 'Service classes', 'Refactoring'])
     ->test('ProgramCategoriesTest.php')
     ->intro(<<<'TEXT'
         Open `app/Enums/ProgramType.php`. Every program has one of five types: camp, club, QUARKS, party or BIG Night Out. The list is in the code. So when the centre starts homeschool classes, a developer must add a case, deploy the site, and update every `match` that uses the enum. Staff cannot do it.
@@ -30,7 +30,7 @@ return Feature::make('program-categories')
     ->reflect([
         'The migration copies the five type names into its own array. Why does it not use the `ProgramType` enum?',
         'The code never checks the name of a category. Why is this important? Find one place where you could be tempted to check it.',
-        'A staff member deletes a category by mistake. What protects the programs in it? Name both protections.',
+        'A staff member deletes a category by mistake. What protects the programs in it? Name both protections, and say which one the staff member sees.',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
     ])
     ->steps([
@@ -39,7 +39,7 @@ return Feature::make('program-categories')
             ->explain(<<<'TEXT'
                 You start with the test. Run the command below. It copies `tests/Feature/ProgramCategoriesTest.php` into the app.
 
-                Read the whole test before you write code. It tells you the names that the code must use: the `Category` model, the `admin.categories.*` routes, the `category_id` field and the `programs()` relationship. It also tells you the rules, such as "a category with programs cannot be deleted".
+                Read the whole test before you write code. It tells you the names that the code must use: the `Category` model, the `admin.categories.*` routes, the `category_id` field, the `programs()` relationship and the `CategoryService`. It also tells you the rules, such as "a category with programs cannot be deleted".
 
                 Look at the last rule, too. The `/clubs` page must still work after the refactor. That rule protects the visitors while you change the code.
                 TEXT)
@@ -80,11 +80,12 @@ return Feature::make('program-categories')
 
                 Add `name`, `slug`, `summary` and `position` to `#[Fillable]`. Add a `programs(): HasMany` relationship. Add an `ordered` scope that sorts by `position` and then by `name`. Every list of categories uses this order, so the rule lives in one place.
 
-                Then open `database/factories/CategoryFactory.php`. Make a plural name, such as "Robots", and build the slug from it with `Str::slug()`. Set `position` to `0`. The tests make many categories, so the name must be unique.
+                Then open `database/factories/CategoryFactory.php`. Make a name from one unique word plus the word "Programs", such as "Robot Programs", and build the slug from it with `Str::slug()`. Set `position` to `0`. The tests make many categories, so the slug must be unique.
                 TEXT)
             ->think('Two categories have the same position. Which one comes first? Why is a second sort column useful?')
             ->hint('`Program` has a `published` scope with the `#[Scope]` attribute. Write `ordered` the same way.')
-            ->hint('In the factory, `fake()->unique()->word()` gives a different word each time. `Str::plural()` and `Str::title()` turn "robot" into "Robots".')
+            ->hint('In the factory, `fake()->unique()->word()` gives a different word each time. `Str::title(fake()->unique()->word()).\' Programs\'` gives "Robot Programs".')
+            ->hint('Do not make the word plural. `unique()` makes the word unique, not the name. Two different words can have the same plural: Faker has both "quo" and "quos", and `Str::plural()` turns both into "Quos". Then two categories get the same slug, and a test fails only now and then. A fixed second word keeps each name as unique as its word.')
             ->code(<<<'PHP'
                 /**
                  * @return HasMany<Program, $this>
@@ -129,13 +130,28 @@ return Feature::make('program-categories')
 
                 Create a category only for a type that programs use. On an empty database, the migration then creates nothing, and the seeder can create the categories without a clash of slugs.
 
-                Write `down()` too. It adds `type` back, copies the category slugs back to types, and drops the foreign key. Then a contributor can roll back your migration.
+                Write `down()` too. It adds `type` back, finds the old type of each category in your array, and sets it on the programs. Then it drops the foreign key and deletes the categories. `up()` created them, so `down()` removes them. Without that, `up()` cannot run again: the slugs are unique, and the categories are still there. Then a contributor can roll back your migration and migrate again.
                 TEXT)
             ->think('The foreign key uses `restrictOnDelete()`. What happens in the database when someone deletes a category that still has programs?')
             ->hint('`DB::table(\'programs\')->distinct()->pluck(\'type\')` gives each type that is in use, once.')
             ->hint('`insertGetId()` inserts a row and returns its ID. Then `DB::table(\'programs\')->where(\'type\', $type)->update([...])` moves those programs.')
             ->hint('Give the array a slug and a name for each old type, such as `\'big_night_out\' => [\'BIG Night Out\', \'big-night-out\']`. For an unknown type, fall back to `ucfirst($type)` and the type itself.')
+            ->hint('In `down()`, `$table->dropConstrainedForeignId(\'category_id\')` drops the foreign key and the column in one call. The new `type` column needs a `default()`, because the programs already exist.')
             ->code(<<<'PHP'
+                /**
+                 * The old program types, with the name and the slug of their category.
+                 *
+                 * @var array<string, array{string, string}>
+                 */
+                private array $types = [
+                    'camp' => ['Camps', 'camps'],
+                    'club' => ['Clubs', 'clubs'],
+                    'quarks' => ['QUARKS', 'quarks'],
+                    'party' => ['Parties', 'parties'],
+                    'big_night_out' => ['BIG Night Out', 'big-night-out'],
+                ];
+
+                // In up():
                 Schema::table('programs', function (Blueprint $table) {
                     $table->foreignId('category_id')->nullable()->after('id')->constrained()->restrictOnDelete();
                 });
@@ -163,9 +179,11 @@ return Feature::make('program-categories')
             ->tryIt(<<<'TEXT'
                 Before you migrate, run `php artisan tinker` and then `DB::table('programs')->pluck('type', 'name')`. Note the type of each program.
 
-                Run `php artisan migrate`. In tinker, run `DB::table('programs')->join('categories', 'categories.id', '=', 'programs.category_id')->pluck('categories.name', 'programs.name')`. Each program is in the category of its old type.
+                Run `php artisan migrate`. In tinker, run `DB::table('programs')->join('categories', 'categories.id', '=', 'programs.category_id')->pluck('categories.name as category', 'programs.name as program')`. Each program is in the category of its old type. Both tables have a `name` column, so the query needs the `as` names.
 
                 Then prove that `down()` works. Run `php artisan migrate:rollback --step=1`, check that the types are back, and run `php artisan migrate` again.
+
+                Do not run `migrate:fresh --seed` yet. The seeder still writes a `type`, and you fix it in a later step. If `migrate` stops with an error halfway, SQLite keeps the part that ran. Then fix the migration, roll back or remove that part by hand in tinker, and migrate again.
                 TEXT)
             ->commit('Move programs from types to categories')
             ->docs('https://laravel.com/docs/migrations#foreign-key-constraints', 'Laravel docs: Foreign key constraints')
@@ -228,7 +246,7 @@ return Feature::make('program-categories')
                     return $this->inCategory('camps');
                 }
                 PHP)
-            ->tryIt('Run `php artisan migrate:fresh --seed`. Then, in tinker, run `App\Models\Category::ordered()->withCount(\'programs\')->get([\'name\'])`. You see each category with its number of programs.')
+            ->tryIt('Run `php artisan migrate:fresh --seed`. Then, in tinker, run `App\Models\Category::ordered()->withCount(\'programs\')->pluck(\'programs_count\', \'name\')`. You see each category in order, with its number of programs.')
             ->commit('Use categories in the program factory and seeder')
             ->docs('https://laravel.com/docs/eloquent-factories#belongs-to-relationships', 'Laravel docs: Belongs to relationships in factories')
             ->docs('https://laravel.com/docs/seeding#writing-seeders', 'Laravel docs: Writing seeders')
@@ -298,41 +316,83 @@ return Feature::make('program-categories')
             ->explain(<<<'TEXT'
                 Delete `app/Enums/ProgramType.php`. Then search the whole project for `ProgramType`. Your editor can do it, or run `grep -rn ProgramType app database resources routes tests`.
 
-                The old tests in `tests/Feature/Admin/ProgramManagementTest.php` send a `type`. Change them to send a `category_id` from a factory category.
+                The old tests in `tests/Feature/Admin/ProgramManagementTest.php` send a `type`, and one rule gives a `type` to `ProgramService`. Change them to send a `category_id` from a factory category, such as `Category::factory()->create()->id`. The rule "staff can create a program" also expects `$program->type` to be `ProgramType::Camp`. Make it check that the program is in the category that the rule sent.
 
-                Now run all the tests. One catalog test fails: "the camps page explains when nothing is listed". The test database is empty, so there is no `camps` category, and the page is 404. That is correct now. A category is data, so the test must create it first. Add `Category::factory()->create(['name' => 'Camps', 'slug' => 'camps'])` at the start of the test.
+                `tests/Feature/ProgramsTest.php` has two rules about the enum: "each program type has a label and a plural label" and "a program casts its type to the enum". The enum is gone on purpose, so delete these two rules and the comment about them at the top. Your `ProgramCategoriesTest.php` checks the categories now.
+
+                Now run all the tests. One catalog test fails: "the camps page explains when nothing is listed". The test database is empty, so there is no `camps` category, and the page is 404. That is correct now. A category is data, so the test must create it first. Add `Category::factory()->create(['name' => 'Camps', 'slug' => 'camps'])` at the start of the test, and import `App\Models\Category`.
 
                 Only change an old test when the behaviour changed on purpose. Here it did: the kinds of program moved from the code into the database.
                 TEXT)
             ->think('Why is it dangerous to change an old test until it passes, without asking why it failed?')
-            ->tryIt('Run `grep -rn ProgramType app database resources routes tests`. You see no results. Then run `php artisan test`. All the old tests pass.')
+            ->hint('`$program->category->is($camps)` is true when the program belongs to the category `$camps`.')
+            ->tryIt('Run `grep -rn ProgramType app database resources routes tests`. You see no results. Then run `php artisan test`. All the old tests pass. Only the rules in `ProgramCategoriesTest.php` about the staff pages and the service still fail.')
             ->commit('Remove the ProgramType enum')
-            ->check(fn (): bool => ! is_file(base_path('app/Enums/ProgramType.php'))),
+            ->check(fn (): bool => Schema::hasColumn('programs', 'category_id') && ! is_file(base_path('app/Enums/ProgramType.php'))),
+
+        Step::make('Write the category service')
+            ->run('php artisan make:class Services/CategoryService')
+            ->explain(<<<'TEXT'
+                Staff will create, rename and delete categories. Remember the rule from `/guide/services`: controllers do HTTP, services do the work. So before you write the controller, write the class that does the work.
+
+                Run the command below. Then add three methods, like the ones in `app/Services/ProgramService.php`. `create(array $data)` makes a category. `update(Category $category, array $data)` changes one. `delete(Category $category)` deletes one. Remove the empty constructor: the service needs nothing to start.
+
+                `delete()` has a business rule: a category with programs cannot be deleted. Put the rule here, in the service. Then every caller follows it, and not only the staff page.
+
+                When the rule refuses, the service throws a named exception. Run `php artisan make:exception CategoryHasPrograms`. Give the exception a clear message in its constructor, such as "Move its programs to another category first." The service does not redirect or show a page. It only says "no", and the controller decides what the user sees.
+                TEXT)
+            ->think('Next year, staff want a button that merges two categories. That code must also refuse to delete a category with programs. Where does the rule live, so that the new button follows it too?')
+            ->hint('Look at `ProgramService::delete()`. Your `delete()` has the same shape, with one check before the delete. This is the first rule in the app that refuses a request, so the exception is new.')
+            ->hint('`$category->programs()->exists()` asks the database if at least one program is in the category, without loading them.')
+            ->hint('In the exception, call `parent::__construct(\'Move its programs to another category first.\')` in `__construct()`. Then `getMessage()` returns the text.')
+            ->code(<<<'PHP'
+                /**
+                 * Delete an empty category.
+                 *
+                 * @throws CategoryHasPrograms when programs are still in the category
+                 */
+                public function delete(Category $category): void
+                {
+                    if ($category->programs()->exists()) {
+                        throw new CategoryHasPrograms;
+                    }
+
+                    $category->delete();
+                }
+                PHP)
+            ->tryIt('Run `php artisan test tests/Feature/ProgramCategoriesTest.php --filter=service`. The rule "the category service refuses to delete a category with programs" passes. It calls the service directly, without a web request.')
+            ->commit('Add the category service')
+            ->docs('https://laravel.com/docs/eloquent-relationships#querying-relationship-existence', 'Laravel docs: Querying relationship existence')
+            ->docs('https://laravel.com/docs/errors#handling-exceptions', 'Laravel docs: Handling exceptions')
+            ->check(Check::all(
+                Check::classExists('App\Services\CategoryService'),
+                Check::classExists('App\Exceptions\CategoryHasPrograms'),
+            )),
 
         Step::make('Add the routes, request and controller for staff')
             ->run('php artisan make:controller Admin/CategoryController --resource --model=Category')
             ->explain(<<<'TEXT'
-                Staff need pages to manage categories. Copy the pattern of the program admin: a resource controller, a form request and four views.
+                Staff need pages to manage categories. Copy the pattern of the program admin: a resource controller, a form request, a service and four views.
 
                 Add `Route::resource('categories', Admin\CategoryController::class)->except('show')` in the staff group in `routes/web.php`. The group already checks that the user is logged in and is staff.
 
                 Create `CategoryRequest` with `php artisan make:request CategoryRequest`. Copy `authorize()` and `prepareForValidation()` from `ProgramRequest`, so staff can leave the slug empty. The slug must be unique, but a category may keep its own slug when staff save it.
 
-                In the controller, `index()` lists the categories with `ordered()` and `withCount('programs')`. In `create()`, suggest the next free position with `Category::max('position') + 1`.
+                In the controller, `index()` lists the categories with `ordered()` and `withCount('programs')`. In `create()`, suggest the next free position with `Category::max('position') + 1`. These methods only read, so they do not need the service.
 
-                `destroy()` must refuse a category that has programs. The foreign key already refuses it in the database, but then staff see an error page. So check first, and send staff back with a clear message: `back()->withErrors(['category' => 'Move its programs to another category first.'])`.
+                `store()`, `update()` and `destroy()` write. So each one asks for `CategoryService $categories` as a parameter and calls it. `destroy()` catches `CategoryHasPrograms` and sends staff back with its message. The foreign key also refuses the delete in the database, but then staff see an error page.
                 TEXT)
-            ->think('The database already protects the programs with `restrictOnDelete()`. Why does the controller check again?')
+            ->think('The database already protects the programs with `restrictOnDelete()`. Why does the service check again?')
             ->hint('Look at `ProgramRequest::rules()`. `Rule::unique(\'categories\', \'slug\')->ignore($category)` allows the category to keep its own slug.')
-            ->hint('`$category->programs()->exists()` asks the database if at least one program is in the category, without loading them.')
+            ->hint('Put the call to the service in `try { ... } catch (CategoryHasPrograms $exception) { ... }`. In the `catch` block, `back()->withErrors([\'category\' => $exception->getMessage()])` sends staff back to the page with the message. The section "When a rule says no" in `/guide/services` shows the pattern.')
             ->code(<<<'PHP'
-                public function destroy(Category $category): RedirectResponse
+                public function destroy(Category $category, CategoryService $categories): RedirectResponse
                 {
-                    if ($category->programs()->exists()) {
-                        return back()->withErrors(['category' => 'Move its programs to another category first.']);
+                    try {
+                        $categories->delete($category);
+                    } catch (CategoryHasPrograms $exception) {
+                        return back()->withErrors(['category' => $exception->getMessage()]);
                     }
-
-                    $category->delete();
 
                     return to_route('admin.categories.index')->with('status', 'Category deleted.');
                 }
@@ -340,20 +400,24 @@ return Feature::make('program-categories')
             ->tryIt('Run `php artisan route:list --name=admin.categories`. You see six routes: index, create, store, edit, update and destroy.')
             ->commit('Add the category admin controller')
             ->docs('https://laravel.com/docs/controllers#resource-controllers', 'Laravel docs: Resource controllers')
+            ->docs('https://laravel.com/docs/controllers#method-injection', 'Laravel docs: Method injection')
             ->docs('https://laravel.com/docs/validation#rule-unique', 'Laravel docs: The unique rule')
             ->docs('https://laravel.com/docs/eloquent-relationships#counting-related-models', 'Laravel docs: Counting related models')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
-            ->check(Check::route('admin.categories.index', 'admin.categories.store', 'admin.categories.destroy')),
+            ->check(Check::all(
+                Check::route('admin.categories.index', 'admin.categories.store', 'admin.categories.destroy'),
+                Check::fileContains('app/Http/Controllers/Admin/CategoryController.php', 'CategoryService'),
+            )),
 
         Step::make('Build the staff pages and the menu link')
             ->explain(<<<'TEXT'
-                Create four views in `resources/views/admin/categories`: `index`, `create`, `edit` and `form`. Copy the program views and change what is different. The list shows the position, the name, the web address and the number of programs.
+                Create four views in `resources/views/admin/categories`: `index`, `create`, `edit` and `form`. Copy the program views and change what is different. The list shows the position, the name, the web address and the number of programs. Give every link `wire:navigate`, as the staff menu does (see /guide/reactive).
 
-                On the edit page, show the delete button only when the category is empty. When it has programs, explain what staff must do first. Show the `category` error from `destroy()` with `@error('category')`.
+                On the edit page, show the delete button only when the category is empty. When it has programs, tell staff what to do first. The test looks for the words "Move them to another category". Show the `category` error from `destroy()` with `@error('category')`.
 
                 Last, add a "Categories" link under "Programs" in the staff menu in `resources/views/layouts/app.blade.php`.
                 TEXT)
-            ->think('The edit page hides the delete button when a category has programs. Is the check in the controller still necessary? Why?')
+            ->think('The edit page hides the delete button when a category has programs. Is the check in the service still necessary? Why?')
             ->hint('Load the count on the edit page with `$category->loadCount(\'programs\')` in the controller. The view then reads `$category->programs_count`.')
             ->hint('The menu link for Programs uses `request()->routeIs(\'admin.programs.*\')`. Use `admin.categories.*` for yours.')
             ->tryIt(<<<'TEXT'

@@ -97,6 +97,8 @@ return Feature::make('session-details')
 
                 Then add the fields to `resources/views/admin/sessions/form.blade.php`, under the label. Use `<x-form-field>` for the title and `<x-admin.textarea-field>` for the description. Tell staff in the field label that the title is optional and that visitors see it instead of the label.
 
+                The controller passes `sessionData()` to `ProgramSessionService`, and the service saves what it gets. So the controller and the service do not change.
+
                 What happens when staff clear the title and save? The browser sends an empty string. Laravel's `ConvertEmptyStringsToNull` middleware turns it into `null`. So the session shows its label again.
                 TEXT)
             ->think('`sessionData()` uses `$this->safe()->except([...])`. Do you need to change it for the new fields? Why not?')
@@ -127,7 +129,7 @@ return Feature::make('session-details')
             ->hint('Run `grep -rn \'session->label\' resources/views` to find each place.')
             ->code(<<<'PHP'
                 <slot:title class="text-lg">{{ $session->displayName() }}</slot:title>
-                <slot:description>{{ $session->dates() }}</slot:description>
+                {{-- The description slot with the dates and the schedule stays as it is. --}}
                 <slot:content class="space-y-1 text-sm">
                     @if ($session->description)
                         <p>{{ $session->description }}</p>
@@ -145,7 +147,7 @@ return Feature::make('session-details')
             ->explain(<<<'TEXT'
                 Run the acceptance test with `guide:verify`. Then run `composer ci:check`. It runs Pint, PHPStan and every test, as GitHub does on your pull request.
 
-                The old tests in `tests/Feature/Admin/ProgramSessionManagementTest.php` send no title. They still pass, because both fields are optional. That shows that the clubs did not change.
+                The old session tests in `tests/Feature/Admin/ProgramManagementTest.php` send no title. They still pass, because both fields are optional. That shows that the clubs did not change.
 
                 In your pull request, tell reviewers to run `php artisan migrate`, because the pull request adds columns.
                 TEXT)

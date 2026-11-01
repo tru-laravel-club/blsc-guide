@@ -1,6 +1,5 @@
 <?php
 
-use App\Cart;
 use App\Enums\FieldScope;
 use App\Enums\RegistrationStatus;
 use App\Models\Child;
@@ -12,6 +11,8 @@ use App\Models\ProgramSession;
 use App\Models\Registration;
 use App\Models\User;
 use App\Notifications\SpotOffered;
+use App\Services\CartService;
+use App\Services\FormService;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Carbon;
@@ -41,7 +42,7 @@ function sessionWithSpots(int $capacity): ProgramSession
 {
     $form = Form::factory()->create();
     $form->fields()->attach(Field::factory()->create(['key' => 'school', 'scope' => FieldScope::Child]), ['position' => 0, 'required' => false]);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     $program = Program::factory()->create(['signup_mode' => 'register', 'form_id' => $form->id, 'age_min' => null, 'age_max' => null]);
 
@@ -109,7 +110,7 @@ test('a full session puts the child on the waitlist, with nothing to pay', funct
     registerChild($child, $session);
 
     expect($child->registrations()->sole()->status)->toBe(RegistrationStatus::Waitlisted)
-        ->and(app(Cart::class)->count())->toBe(0);
+        ->and(app(CartService::class)->count())->toBe(0);
 
     $this->actingAs($child->user)->get(route('dashboard'))->assertSee('Ada')->assertSee('Waitlist');
 });
@@ -220,7 +221,7 @@ test('only the parent can accept an offer, and only while it is open', function 
     $this->travel(2)->days();
     $this->actingAs($offer->child->user)->post(route('registrations.accept', $offer))->assertSessionHasErrors('offer');
 
-    expect(app(Cart::class)->count())->toBe(0);
+    expect(app(CartService::class)->count())->toBe(0);
 });
 
 test('an expired offer moves on to the next child', function () {

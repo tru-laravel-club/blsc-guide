@@ -7,6 +7,7 @@ use App\Models\Form;
 use App\Models\Program;
 use App\Models\User;
 use App\Notifications\ApplicationDecided;
+use App\Services\FormService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Support\Facades\Notification;
 
@@ -15,7 +16,8 @@ use Illuminate\Support\Facades\Notification;
 |
 | A program with the apply mode takes applications, such as QUARKS. The applicant
 | logs in and answers the program's form. Staff accept or decline each application,
-| and the applicant sees the decision on the dashboard.
+| and the applicant sees the decision on the dashboard. Staff cannot delete a
+| program that people applied to.
 */
 
 /**
@@ -30,7 +32,7 @@ function programTakingApplications(array $attributes = []): Program
 
     $form = Form::factory()->create(['name' => 'QUARKS application']);
     $form->fields()->attach($question, ['position' => 0, 'required' => true]);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     return Program::factory()->create(['name' => 'QUARKS', 'signup_mode' => 'apply', 'form_id' => $form->id, ...$attributes]);
 }
@@ -217,4 +219,17 @@ test('the applicant sees the status of each application on the dashboard', funct
         ->assertSee('QUARKS')
         ->assertSee('Accepted')
         ->assertDontSee('Someone else');
+});
+
+test('staff cannot delete a program with an application', function () {
+    $program = programTakingApplications();
+    Application::factory()->for($program)->create();
+
+    $this->actingAs(User::factory()->staff()->create())
+        ->from(route('admin.programs.edit', $program))
+        ->delete(route('admin.programs.destroy', $program))
+        ->assertRedirect(route('admin.programs.edit', $program))
+        ->assertSessionHasErrors('program');
+
+    expect($program->fresh())->not->toBeNull();
 });

@@ -1,6 +1,5 @@
 <?php
 
-use App\Cart;
 use App\Enums\FieldRole;
 use App\Enums\FieldScope;
 use App\Enums\FieldType;
@@ -13,6 +12,8 @@ use App\Models\Program;
 use App\Models\ProgramSession;
 use App\Models\Registration;
 use App\Models\User;
+use App\Services\CartService;
+use App\Services\FormService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\URL;
 
@@ -23,7 +24,8 @@ use Illuminate\Support\Facades\URL;
 | of their children, and answers the program's form. The registration goes into
 | the cart. The parent pays through the cart, and the payment confirms it.
 | The app checks the registration dates, the age on the first day, a free spot,
-| and that a child is not registered twice.
+| and that a child is not registered twice. Staff cannot delete a session or a
+| program that families registered for.
 */
 
 beforeEach(function () {
@@ -56,7 +58,7 @@ function programTakingRegistrations(array $attributes = []): Program
     $form = Form::factory()->create(['name' => 'Club registration']);
     $form->fields()->attach($allergies, ['position' => 0, 'required' => true]);
     $form->fields()->attach($phone, ['position' => 1, 'required' => false]);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     return Program::factory()->create([
         'name' => 'Junior Robotics Club',
@@ -207,7 +209,7 @@ test('the answers follow the rules of the form', function () {
         ->assertSessionHasErrors('allergies');
 
     expect(Registration::count())->toBe(0)
-        ->and(app(Cart::class)->count())->toBe(0);
+        ->and(app(CartService::class)->count())->toBe(0);
 });
 
 test('paying for the order confirms the registration', function () {
@@ -288,7 +290,7 @@ test('a full session never puts a child in the cart', function () {
 
     $this->actingAs($parent)->post(route('registrations.store', registerParameters($session, ['child' => sevenYearOld($parent)->id])), ['allergies' => 'None']);
 
-    expect(app(Cart::class)->count())->toBe(0)
+    expect(app(CartService::class)->count())->toBe(0)
         ->and(Registration::where('status', 'pending')->count())->toBe(0);
 });
 
@@ -303,7 +305,7 @@ test('the same child cannot register twice for one session', function () {
         ->assertSessionHasErrors('child');
 
     expect(Registration::count())->toBe(1)
-        ->and(app(Cart::class)->count())->toBe(0);
+        ->and(app(CartService::class)->count())->toBe(0);
 });
 
 test('a second try before payment keeps one registration in the cart', function () {
@@ -316,7 +318,7 @@ test('a second try before payment keeps one registration in the cart', function 
 
     expect(Registration::count())->toBe(1)
         ->and(Registration::sole()->submission->answer('allergies'))->toBe('Peanuts')
-        ->and(app(Cart::class)->count())->toBe(1);
+        ->and(app(CartService::class)->count())->toBe(1);
 });
 
 test('a parent cannot register another family\'s child', function () {
@@ -370,4 +372,31 @@ test('the parent sees the registrations of their children on the dashboard', fun
         ->assertSee('Junior Robotics Club')
         ->assertSee('Confirmed')
         ->assertDontSee('Robin');
+});
+
+test('staff cannot delete a session with registrations', function () {
+    $session = registrationSession();
+    Registration::factory()->for($session, 'session')->create();
+
+    $this->actingAs(User::factory()->staff()->create())
+        ->from(route('admin.sessions.edit', $session))
+        ->delete(route('admin.sessions.destroy', $session))
+        ->assertRedirect(route('admin.sessions.edit', $session))
+        ->assertSessionHasErrors('session');
+
+    expect($session->fresh())->not->toBeNull();
+});
+
+test('staff cannot delete a program with a registration', function () {
+    $session = registrationSession();
+    Registration::factory()->for($session, 'session')->create();
+
+    $this->actingAs(User::factory()->staff()->create())
+        ->from(route('admin.programs.edit', $session->program))
+        ->delete(route('admin.programs.destroy', $session->program))
+        ->assertRedirect(route('admin.programs.edit', $session->program))
+        ->assertSessionHasErrors('program');
+
+    expect($session->program->fresh())->not->toBeNull()
+        ->and($session->fresh())->not->toBeNull();
 });

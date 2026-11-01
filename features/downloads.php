@@ -11,7 +11,7 @@ return Feature::make('downloads')
     ->level(2)
     ->needs(['cover-images', 'category-descriptions'])
     ->summary('Staff upload files, such as printable party invitations or a camp packing list, to a page or a category. Visitors download them.')
-    ->teaches(['Polymorphic relationships', 'Traits', 'Model events', 'File downloads', 'File validation', 'Storage::fake'])
+    ->teaches(['Polymorphic relationships', 'Traits', 'Service classes', 'Model events', 'File downloads', 'File validation', 'Storage::fake'])
     ->test('DownloadsTest.php')
     ->intro(<<<'TEXT'
         Families who book a birthday party want printable invitations for their guests. Staff have the invitations as PDF files. They want to put them on the Parties category page, so parents can print one.
@@ -24,10 +24,10 @@ return Feature::make('downloads')
 
         1. Staff open the edit page of a category or a page, choose a PDF file and give it a title.
         2. `DownloadRequest` checks the file: a PDF, at most 10 MB, with a title.
-        3. The admin controller stores the file on the uploads disk and creates a `Download` for the owner.
+        3. The admin controller gives the file and the title to `DownloadService`. The service stores the file on the uploads disk and creates a `Download` for the owner.
         4. The category page and the page list the downloads. Each link goes to `/downloads/{download}`.
         5. The public controller checks that the owner is public, then sends the file with a safe name made from the title.
-        6. When staff delete a download, or its owner, the `Download` model deletes the file.
+        6. When staff delete a download, or its owner, a `deleted` event on the `Download` model deletes the file.
         TEXT)
     ->docs('https://laravel.com/docs/eloquent-relationships#one-to-many-polymorphic-relations', 'Laravel docs: One to many polymorphic relationships')
     ->docs('https://laravel.com/docs/filesystem#downloading-files', 'Laravel docs: Downloading files')
@@ -36,7 +36,7 @@ return Feature::make('downloads')
     ->reflect([
         'The first request was "party invitations". Why did we build "downloads"? Name two other uses that need no new code.',
         'Staff want a packing list on a program page. Which files change? Which line in `AppServiceProvider` must you add, and why?',
-        'The model deletes its file in a `deleted` event, but Cover images deletes the file in the controller. Why is the event a better place here?',
+        'The model deletes its file in a `deleted` event, but Cover images deletes the file in `PageService`. Why is the event a better place here?',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
     ])
     ->steps([
@@ -101,6 +101,7 @@ return Feature::make('downloads')
             ->think('The morph map lists `page` and `category`. What does the database store for a `Program` owner if a contributor forgets to add it to the map?')
             ->hint('`Relation::morphMap([\'page\' => Page::class, ...])` sets the map. Import `Illuminate\Database\Eloquent\Relations\Relation`.')
             ->hint('Add `@return MorphMany<Download, $this>` above the relationship, so PHPStan knows what it returns.')
+            ->hint('Put `use HasDownloads;` above the `/** @use HasFactory<...> */` line, with a blank line between them. Pint sorts the traits by name, and the `@use` docblock must stay directly above `use HasFactory;`, or PHPStan reports an error.')
             ->code(<<<'PHP'
                 trait HasDownloads
                 {
@@ -127,7 +128,7 @@ return Feature::make('downloads')
 
         Step::make('Fill in the Download model')
             ->explain(<<<'TEXT'
-                Open `app/Models/Download.php`. Add a docblock with the columns, and `#[Fillable(['title'])]`. Do not make `path` fillable, for the same reason as `cover_path`: only the controller sets it.
+                Open `app/Models/Download.php`. Add a docblock with the columns, and `#[Fillable(['title'])]`. Do not make `path` fillable, for the same reason as `cover_path`: only the service sets it.
 
                 Add four parts:
 
@@ -136,9 +137,11 @@ return Feature::make('downloads')
                 3. `isPublic()`. A file on a draft page must stay hidden until the page is published. A category is always public.
                 4. A `deleted` event in `booted()` that deletes the file from the uploads disk. Staff can delete a download, a page or a category. All three paths delete the `Download` model, so the event deletes the file in every case.
 
-                Then the trait. In `HasDownloads`, add `bootHasDownloads()`. Laravel calls a method named `boot` plus the trait name when the model starts. Add a `deleted` event there that deletes each download of the model. Delete each one through the model, not with one query, so that each `deleted` event runs and removes its file.
+                This is the one kind of write that stays in a model. The project rule says that every write goes through a service. The exception is a clean-up that must happen however a row is deleted. `DownloadService` deletes a download, `PageService` deletes a page and `CategoryService` deletes a category. The event covers all three, and every future path, with no copy of the code. Write a comment above the event that says why it is there.
 
-                Last, fill in `DownloadFactory`: a title, a path, and a page as the owner.
+                Then the trait. In `HasDownloads`, add `bootHasDownloads()`. Laravel calls a method named `boot` plus the trait name when the model starts. Add a `deleted` event there that deletes each download of the model. Load the downloads with `get()`, then delete each one through the model, not with one query, so that each `deleted` event runs and removes its file.
+
+                Last, fill in `DownloadFactory`: a title, a path, and a page as the owner. For the owner, set `downloadable_type` to `'page'` and `downloadable_id` to `Page::factory()`.
                 TEXT)
             ->think('`$page->downloads()->delete()` deletes all the rows with one query. Why does it leave the files on the disk?')
             ->hint('`Str::slug(\'Dinosaur "party" invitation / A4\')` gives `dinosaur-party-invitation-a4`. If the title has no letters or digits, the slug is empty. Use `?: \'download\'` for that case.')
@@ -206,6 +209,53 @@ return Feature::make('downloads')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/12', 'Laravel From Scratch, episode 12: Form Request Classes')
             ->check(Check::fileContains('app/Http/Requests/DownloadRequest.php', 'mimes:pdf')),
 
+        Step::make('Write the download service')
+            ->run('php artisan make:class Services/DownloadService')
+            ->explain(<<<'TEXT'
+                Staff upload and delete files. Those are writes, so they go in a service, as in `PageService`: controllers do HTTP, services do the work (see `/guide/services`).
+
+                Run the command below. Remove the empty constructor, and add two methods:
+
+                - `upload(Page|Category $owner, string $title, UploadedFile $file): Download`. Store the file in the `downloads` folder on the uploads disk. Laravel gives it a random name. Then make the download through the owner: `$owner->downloads()->make([...])`. The relationship fills in `downloadable_type` and `downloadable_id`. Set the path, and save.
+                - `delete(Download $download): void`. It only calls `$download->delete()`. The `deleted` event removes the file.
+
+                `upload()` takes a title and a file, not a request. So a seeder or a command can add a download with the same code.
+
+                If the disk cannot store the file, `store()` returns `false`. The service cannot show a message, so it throws a named exception. Run `php artisan make:exception FileNotStored`, and give it the message "The file could not be saved. Try again."
+                TEXT)
+            ->think('A third owner, such as a program, needs downloads. Which lines change in the service? Which part already works for it?')
+            ->hint('`$file->store(\'downloads\', config()->string(\'filesystems.uploads\'))` returns the path, or `false`.')
+            ->hint('Look at `CategoryService` and `CategoryHasPrograms`. The exception sets its message in `__construct()` in the same way.')
+            ->code(<<<'PHP'
+                /**
+                 * Store the file on the uploads disk and save a download for its owner.
+                 *
+                 * @throws FileNotStored when the disk cannot store the file
+                 */
+                public function upload(Page|Category $owner, string $title, UploadedFile $file): Download
+                {
+                    $path = $file->store('downloads', config()->string('filesystems.uploads'));
+
+                    if (! $path) {
+                        throw new FileNotStored;
+                    }
+
+                    $download = $owner->downloads()->make(['title' => $title]);
+                    $download->path = $path;
+                    $download->save();
+
+                    return $download;
+                }
+                PHP)
+            ->tryIt('Run `php artisan tinker`, then `app(App\Services\DownloadService::class)->upload(App\Models\Category::first(), \'Packing list\', Illuminate\Http\UploadedFile::fake()->create(\'list.pdf\', 5, \'application/pdf\'))->path`. You see a path such as `"downloads/Xq3….pdf"`. Delete it with `app(App\Services\DownloadService::class)->delete(App\Models\Download::latest(\'id\')->first())`.')
+            ->commit('Add the download service')
+            ->docs('https://laravel.com/docs/filesystem#storing-files', 'Laravel docs: Storing files')
+            ->docs('https://laravel.com/docs/eloquent-relationships#inserting-and-updating-related-models', 'Laravel docs: Inserting related models')
+            ->check(Check::all(
+                Check::classExists('App\Services\DownloadService'),
+                Check::classExists('App\Exceptions\FileNotStored'),
+            )),
+
         Step::make('Store and delete files for staff')
             ->run('php artisan make:controller Admin/DownloadController')
             ->explain(<<<'TEXT'
@@ -217,36 +267,31 @@ return Feature::make('downloads')
 
                 The group adds `admin.` to each name. The first two routes bind a different model, so each gets its own method: `storeForPage()` and `storeForCategory()`. Both call one private method, `upload()`, that takes the owner as `Page|Category`.
 
-                In `upload()`, store the file in the `downloads` folder on the uploads disk. Laravel gives it a random name. Then make the download through the owner: `$owner->downloads()->make([...])`. The relationship fills in `downloadable_type` and `downloadable_id`. Set the path, and save. If the disk cannot store the file, `store()` returns `false`. Send staff back with an error then.
-
-                `destroy()` only calls `$download->delete()`. The `deleted` event removes the file. Each method returns `back()` with a status, because staff came from the edit page and want to stay there.
+                Each method asks for `DownloadService $downloads` as a parameter. `upload()` gives the service the owner, the valid title and the file. It catches `FileNotStored` and sends staff back with its message. `destroy()` calls `$downloads->delete()`. Each method returns `back()` with a status, because staff came from the edit page and want to stay there.
                 TEXT)
-            ->think('A third owner, such as a program, needs downloads. Which lines change in this controller and in the routes?')
-            ->hint('`$request->file(\'download_file\')?->store(\'downloads\', config()->string(\'filesystems.uploads\'))` returns the path, or `false`.')
-            ->hint('`$request->validated(\'download_title\')` returns one validated value.')
+            ->think('The controller has no `Storage` call and no `save()`. What is left in it? Why is that the HTTP part?')
+            ->hint('`$request->validated(\'download_title\')` returns one validated value. `$request->file(\'download_file\')` returns the uploaded file.')
+            ->hint('Look at `CategoryController::destroy()`. It catches the exception of its service in the same way.')
             ->code(<<<'PHP'
-                private function upload(DownloadRequest $request, Page|Category $owner): RedirectResponse
+                private function upload(DownloadRequest $request, Page|Category $owner, DownloadService $downloads): RedirectResponse
                 {
-                    $path = $request->file('download_file')?->store('downloads', config()->string('filesystems.uploads'));
-
-                    if (! $path) {
-                        return back()->withErrors(['download_file' => 'The file could not be saved. Try again.']);
+                    try {
+                        $downloads->upload($owner, $request->validated('download_title'), $request->file('download_file'));
+                    } catch (FileNotStored $exception) {
+                        return back()->withErrors(['download_file' => $exception->getMessage()]);
                     }
-
-                    $download = $owner->downloads()->make(['title' => $request->validated('download_title')]);
-                    $download->path = $path;
-                    $download->save();
 
                     return back()->with('status', 'File uploaded.');
                 }
                 PHP)
             ->tryIt('Run `php artisan route:list --path=downloads`. You see the three staff routes.')
             ->commit('Store and delete downloads for staff')
-            ->docs('https://laravel.com/docs/filesystem#storing-files', 'Laravel docs: Storing files')
-            ->docs('https://laravel.com/docs/eloquent-relationships#inserting-and-updating-related-models', 'Laravel docs: Inserting related models')
-            ->docs('https://laravel.com/docs/redirects#redirecting-with-flashed-session-data', 'Laravel docs: Redirecting with flashed data')
+            ->docs('https://laravel.com/docs/responses#redirecting-with-flashed-session-data', 'Laravel docs: Redirecting with flashed data')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
-            ->check(Check::route('admin.pages.downloads.store', 'admin.categories.downloads.store', 'admin.downloads.destroy')),
+            ->check(Check::all(
+                Check::route('admin.pages.downloads.store', 'admin.categories.downloads.store', 'admin.downloads.destroy'),
+                Check::fileContains('app/Http/Controllers/Admin/DownloadController.php', 'DownloadService'),
+            )),
 
         Step::make('Add the upload section to the edit pages')
             ->explain(<<<'TEXT'
@@ -255,7 +300,7 @@ return Feature::make('downloads')
                 The section has three parts:
 
                 1. `<x-admin.status />`, so staff see "File uploaded." or "File deleted."
-                2. The list of downloads. Each one links to the file and has a delete button. Use `<x-admin.delete-button>` with a description that says visitors lose the file.
+                2. The list of downloads. Each one shows its title and has a delete button. Use `<x-admin.delete-button>` with a description that says visitors lose the file. The next step adds the public route, and then the title becomes a link to the file.
                 3. A form with `enctype="multipart/form-data"`, a `download_title` field and a `download_file` field with `accept="application/pdf"`.
 
                 The upload form must be its own `<form>`, after the main form. HTML does not allow a form inside a form. The browser ignores the inner `<form>` tag, and the fields go with the outer form.
@@ -298,6 +343,8 @@ return Feature::make('downloads')
 
                 In `__invoke()`, stop with a 404 in two cases: the download is not public, or its file is not on the disk. Then return `Storage::disk(...)->download($path, $name)`. The second argument is the name from `filename()`. The response tells the browser to save the file with that name, and not to open it in the tab.
 
+                Now make each title in `admin/downloads/section.blade.php` a link to `route('downloads.show', $download)`. Do not add `wire:navigate` to it. The link sends a file, not a page, and `wire:navigate` only works for pages.
+
                 Why a route, and not a link to the disk address, like a cover image? The route checks `isPublic()` each time. It gives the file a clear name. And the link stays the same if the centre moves its files to another disk.
                 TEXT)
             ->think('The file is on the `public` disk, under a random name. Can a visitor download a file of a draft page without your route? What protects it?')
@@ -324,7 +371,7 @@ return Feature::make('downloads')
             ->explain(<<<'TEXT'
                 Create `resources/views/downloads/list.blade.php`. It takes `$downloads` and shows nothing when the list is empty. Otherwise it shows a "Downloads" heading and one link for each file, with "(PDF)" after the title. Visitors then know that the link saves a file and does not open a page.
 
-                Include it in `resources/views/categories/show.blade.php`, under the description and above the programs. Include it in `resources/views/pages/show.blade.php`, under the body.
+                Include it in `resources/views/categories/show.blade.php`, under the description and above the programs. Include it in `resources/views/pages/show.blade.php`, under the body. These links also need no `wire:navigate`, because each one sends a file.
 
                 The view loops over `$category->downloads`. The relationship sorts by title, so staff control the order with the titles. The code never checks the name of a category. Any category or page can have files.
                 TEXT)

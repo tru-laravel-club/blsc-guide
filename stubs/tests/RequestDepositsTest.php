@@ -1,12 +1,12 @@
 <?php
 
-use App\Cart;
 use App\Models\Deposit;
 use App\Models\Inquiry;
 use App\Models\Order;
 use App\Models\Program;
 use App\Models\User;
 use App\Notifications\DepositRequested;
+use App\Services\CartService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\Notification;
@@ -80,7 +80,7 @@ test('the link in the email puts the deposit in the cart of a guest', function (
 
     $this->get($url)->assertRedirect(route('cart.show'));
 
-    expect(app(Cart::class)->total(null))->toBe(7500);
+    expect(app(CartService::class)->total(null))->toBe(7500);
 
     $this->get(route('cart.show'))->assertSee('Birthday')->assertSee('$75.00');
 });
@@ -95,7 +95,7 @@ test('a tampered or unsigned link is refused', function () {
     $this->get(str_replace("/deposits/{$deposit->id}/", "/deposits/{$other->id}/", $deposit->payUrl()))->assertForbidden();
     $this->get(route('deposits.pay', $deposit))->assertForbidden();
 
-    expect(app(Cart::class)->count())->toBe(0);
+    expect(app(CartService::class)->count())->toBe(0);
 });
 
 test('paying the order marks the deposit as paid', function () {
@@ -126,7 +126,7 @@ test('staff can change the amount before the visitor pays', function () {
     auth()->logout();
     $this->get($this->inquiry->deposit->payUrl());
 
-    expect(app(Cart::class)->total(null))->toBe(8050);
+    expect(app(CartService::class)->total(null))->toBe(8050);
 });
 
 test('a paid deposit cannot change or go in the cart again', function () {
@@ -140,7 +140,7 @@ test('a paid deposit cannot change or go in the cart again', function () {
     auth()->logout();
     $this->get($deposit->payUrl())->assertRedirect();
 
-    expect(app(Cart::class)->count())->toBe(0);
+    expect(app(CartService::class)->count())->toBe(0);
 });
 
 test('the amount must be a positive number of dollars', function (mixed $amount) {

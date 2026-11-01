@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Payments\FakeGateway;
 use App\Payments\MonerisGateway;
 use App\Payments\PaymentGateway;
+use App\Services\PaymentService;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
@@ -107,6 +108,34 @@ test('a paid payment is not completed twice', function () {
         ->assertSee('https://example.com/orders/7');
 
     Event::assertNotDispatched(PaymentSucceeded::class);
+});
+
+test('two requests that complete the same payment at once announce it once', function () {
+    Event::fake([PaymentSucceeded::class]);
+    $payment = Payment::factory()->create(['user_id' => null]);
+
+    // A double-click: two requests load the payment at the same moment, and both copies say "pending".
+    $first = $payment->fresh();
+    $second = $payment->fresh();
+    request()->merge(['fake_result' => 'approve']);
+
+    app(PaymentService::class)->complete($first);
+    app(PaymentService::class)->complete($second);
+
+    expect($payment->fresh()->status)->toBe(PaymentStatus::Paid);
+    Event::assertDispatchedTimes(PaymentSucceeded::class, 1);
+});
+
+test('a late decline does not undo a paid payment', function () {
+    $payment = Payment::factory()->create(['user_id' => null]);
+    $stale = $payment->fresh();
+
+    $this->post(URL::signedRoute('payments.complete', $payment), ['fake_result' => 'approve']);
+
+    request()->merge(['fake_result' => 'decline']);
+    app(PaymentService::class)->complete($stale);
+
+    expect($payment->fresh()->status)->toBe(PaymentStatus::Paid);
 });
 
 test('the config chooses the gateway', function () {

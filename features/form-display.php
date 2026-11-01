@@ -47,6 +47,8 @@ return Feature::make('form-display')
 
                 Look at the rule with `->with([...])`. It is a **dataset**: Pest runs the same rule once for each row. Each row is a field type, a wrong value and a right value. So one short rule tests all nine types.
 
+                The dataset calls `Field::factory()->choice([...], $type)`. The second argument is the type. If your `choice()` state from "Forms and fields" has no `$type` parameter, add `FieldType $type = FieldType::Choice` now.
+
                 The last rule calls `FormRules::for()` directly. It fixes the shape of the field definition, because later features depend on it.
                 TEXT)
             ->think('The rule "a required field is required" checks the error text "The Your name field is required." The key is `your_name`. Where do the words "Your name" come from?')
@@ -68,7 +70,7 @@ return Feature::make('form-display')
                 TEXT)
             ->think('`fieldDefinitions()` leaves out archived fields. Where else could you filter them? Why is this the best place?')
             ->hint('`$this->fields()->active()->get()` uses the `active` scope through the relationship.')
-            ->hint('Write the shape of the array once as a PHPStan type in `FormRules` (next step): `@phpstan-type Definition array{key: string, label: string, ...}`. Other classes import it with `@phpstan-import-type Definition from FormRules`.')
+            ->hint('Write the shape of the array once as a PHPStan type in `FormRules` (next step): `@phpstan-type Definition array{key: string, label: string, type: string, options: array<int, Option>, required: bool, help: string|null, scope?: string, role?: string|null, sensitive?: bool}`. The `?` marks a key as optional: `FormRules` does not read it, and the last rule of the test leaves it out. Other classes import the type with `@phpstan-import-type Definition from FormRules`.')
             ->code(<<<'PHP'
                 // app/Models/Field.php
                 public function definition(bool $required = false): array
@@ -196,7 +198,7 @@ return Feature::make('form-display')
                 Create the components in `resources/views/components/forms`. Start with `field.blade.php`: it shows the label, "(optional)" when the field is not required, the help text, the slot, and the errors. Every other component wraps its input in `<x-forms.field>`, so the label and the errors look the same everywhere.
 
                 - `input`: an `<april:input>` with the type from `inputType()`.
-                - `long-text`: an `<april:textarea>`.
+                - `long-text`: a plain `<textarea>` with the value between its tags. April UI 1.3.6 has a bug: `<april:textarea>` shows no value. Copy the classes from `resources/views/components/admin/textarea-field.blade.php`.
                 - `choice`: an `<april:native-select>` with a first empty option, "Choose one".
                 - `checkboxes`: one `<april:checkbox>` for each choice, with the name `key[]`, so the browser sends an array.
                 - `consent`: one checkbox, with the label of the field next to it.
@@ -252,11 +254,13 @@ return Feature::make('form-display')
             ->explain(<<<'TEXT'
                 Add three public routes: `GET /forms/{form:slug}` named `forms.show`, `POST /forms/{form:slug}` named `forms.store`, and `GET /forms/{form:slug}/thanks` named `forms.thanks`. `{form:slug}` finds the form by its slug. An unknown slug gives a 404 page.
 
-                In `FormController`, `show()` passes the form and its definitions to `forms/show.blade.php`. The view prints the name, the description and `<x-dynamic-form>`.
+                In `FormController`, `show()` passes the form and its definitions to `forms/show.blade.php`. The view uses the public layout, `<x-layouts::site>`, as `programs/show.blade.php` does. It prints the name, the description and `<x-dynamic-form>`. `thanks()` shows `forms/thanks.blade.php` with the heading "Thank you". A link back to the home page uses `wire:navigate`, as every link in the site does.
 
                 `store()` gets the definitions again, builds the rules and validates. The third argument of `validate()` gives a name for each key. Pass `array_column($fields, 'label', 'key')`, so an error says "The Your name field is required." and not "The your name field...".
 
                 After a valid post, redirect to `forms.thanks`. Do not show the thank-you page from the post itself. If the visitor reloads a page that came from a post, the browser sends the answers again.
+
+                This controller does only HTTP work: it reads the form, validates the request, and returns a page or a redirect. Remember the rule from "Forms and fields": **controllers do HTTP, services do the work**. Nothing changes in the database yet, so there is no service in this feature. In the next feature, the answers are saved, and `FormSubmissionService` does that work.
                 TEXT)
             ->think('`store()` reads the definitions from the database again. Why not send them from the page in hidden inputs?')
             ->hint('`array_column($fields, \'label\', \'key\')` turns the list into `[\'your_name\' => \'Your name\', ...]`.')

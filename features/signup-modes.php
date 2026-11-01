@@ -9,7 +9,7 @@ return Feature::make('signup-modes')
     ->title('Sign-up modes')
     ->section(Section::Catalog)
     ->level(2)
-    ->needs(['programs-admin'])
+    ->needs(['program-categories'])
     ->summary('Each program has a sign-up mode: none, register, apply or request. The code uses the mode, not the category, to decide what a visitor can do.')
     ->teaches(['Backed enums', 'Enum casts', 'Column defaults', 'Enum validation'])
     ->test('SignupModesTest.php')
@@ -54,7 +54,7 @@ return Feature::make('signup-modes')
 
                 Add the four cases: `None`, `Register`, `Apply` and `Request`, with the values `none`, `register`, `apply` and `request`.
 
-                Then add two methods. `label()` returns the name that staff see in the program form, such as "Registration". `callToAction()` returns the text that visitors see on the program page, such as "Registration opens soon". Take the exact texts from the test.
+                Then add two methods. `label()` returns the name that staff see in the program form, such as "Registration". `callToAction()` returns the text that visitors see on the program page, such as "Registration opens soon". Take the exact texts from the test: the dataset at the top has the texts for visitors, and the rule "the program form offers every mode" has the names for staff.
 
                 Put the text in the enum, not in the views. Then the admin form, the program page and later features all use the same words.
                 TEXT)
@@ -155,6 +155,8 @@ return Feature::make('signup-modes')
                 Staff choose the mode in the program form. Add a select with the label "How visitors sign up". Loop over `SignupMode::cases()`. Use the value of each case as the option value, and `label()` as the text.
 
                 Then validate it in `ProgramRequest`. `Rule::enum(SignupMode::class)` accepts only the values of the enum. A changed form cannot send `lottery`.
+
+                You do not change the controller or `ProgramService`. The controller passes `$request->validated()` to the service, and the new field is in it now. This is the reward for "controllers do HTTP, services do the work" (see `/guide/services`): a new field touches the form, the request and the model, and nothing else.
 
                 The rule also has `sometimes`. Look at the old tests in `tests/Feature/Admin/ProgramManagementTest.php`. They save programs without a mode. With `sometimes`, a request without the field is still valid, and the database default fills it in. The form always sends the field, so staff always choose.
 

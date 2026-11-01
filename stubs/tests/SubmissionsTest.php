@@ -6,6 +6,7 @@ use App\Models\Field;
 use App\Models\Form;
 use App\Models\Submission;
 use App\Models\User;
+use App\Services\FormService;
 
 /*
 | Acceptance test for the "Submissions and versions" feature.
@@ -34,8 +35,8 @@ function formWithFields(array $fields, string $slug = 'camp-form'): Form
 test('publishing creates the next version with a copy of the field definitions', function () {
     $form = formWithFields([Field::factory()->create(['key' => 'school', 'label' => 'School'])]);
 
-    $first = $form->publish();
-    $second = $form->publish();
+    $first = app(FormService::class)->publish($form);
+    $second = app(FormService::class)->publish($form);
 
     expect($first->number)->toBe(1)
         ->and($second->number)->toBe(2)
@@ -53,7 +54,7 @@ test('an archived field is not in the next version', function () {
     $fax->archived_at = now();
     $fax->save();
 
-    expect(collect($form->publish()->fields)->pluck('key')->all())->toBe(['school']);
+    expect(collect(app(FormService::class)->publish($form)->fields)->pluck('key')->all())->toBe(['school']);
 });
 
 test('a form shows its latest published version, not the draft', function () {
@@ -61,7 +62,7 @@ test('a form shows its latest published version, not the draft', function () {
 
     $this->get(route('forms.show', $form))->assertNotFound();
 
-    $form->publish();
+    app(FormService::class)->publish($form);
     $form->fields()->attach(Field::factory()->create(['label' => 'Shoe size']), ['position' => 5, 'required' => true]);
 
     $this->get(route('forms.show', $form))
@@ -75,7 +76,7 @@ test('a visitor sends answers and they are saved under the field keys', function
         Field::factory()->create(['key' => 'school']),
         Field::factory()->choice(['k' => 'Kindergarten', 'grade_1' => 'Grade 1'])->create(['key' => 'grade']),
     ]);
-    $version = $form->publish();
+    $version = app(FormService::class)->publish($form);
 
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary', 'grade' => 'grade_1'])
         ->assertRedirect(route('forms.thanks', $form));
@@ -90,7 +91,7 @@ test('a visitor sends answers and they are saved under the field keys', function
 
 test('a signed-in person is saved with the submission', function () {
     $form = formWithFields([Field::factory()->create(['key' => 'school'])]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $parent = User::factory()->create();
 
     $this->actingAs($parent)->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
@@ -100,7 +101,7 @@ test('a signed-in person is saved with the submission', function () {
 
 test('a wrong answer is not saved', function () {
     $form = formWithFields([Field::factory()->type(FieldType::Email)->create(['key' => 'email'])]);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     $this->post(route('forms.store', $form), ['email' => 'not an email'])->assertSessionHasErrors('email');
 
@@ -110,11 +111,11 @@ test('a wrong answer is not saved', function () {
 test('an old submission keeps its old labels after staff change a label and publish', function () {
     $school = Field::factory()->create(['key' => 'school', 'label' => 'School']);
     $form = formWithFields([$school]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
 
     $school->update(['label' => 'Name of your school']);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Brock Middle']);
 
     [$old, $new] = Submission::orderBy('id')->get();
@@ -134,11 +135,11 @@ test('an old submission keeps its old labels after staff change a label and publ
 test('a renamed label still finds old answers by key', function () {
     $school = Field::factory()->create(['key' => 'school', 'label' => 'School']);
     $form = formWithFields([$school]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
 
     $school->update(['label' => 'Name of your school']);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     expect(Submission::sole()->answer('school'))->toBe('Westsyde Elementary')
         ->and(Submission::sole()->answer('not_asked'))->toBeNull();
@@ -151,7 +152,7 @@ test('code finds an answer by its role, never by its label', function () {
         'role' => FieldRole::EmergencyPhone,
     ]);
     $form = formWithFields([$phone]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['emergency_phone' => '250-555-0100']);
 
     $phone->update(['label' => 'Who do we call in an emergency?']);
@@ -172,7 +173,7 @@ test('only staff can see submissions', function () {
 
 test('staff see the forms and the submissions of one form, newest first', function () {
     $form = formWithFields([Field::factory()->create(['key' => 'school'])]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->travelTo(now()->subDay());
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
     $this->travelBack();

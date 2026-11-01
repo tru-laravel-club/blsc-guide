@@ -5,13 +5,30 @@ use TruLaravelClub\BlscGuide\Feature;
 use TruLaravelClub\BlscGuide\Section;
 use TruLaravelClub\BlscGuide\Step;
 
+/**
+ * True when Program::hasSignups() names the relationship, so it counts that kind of sign-up.
+ */
+$hasSignupsAsks = static function (string $relationship): bool {
+    $path = base_path('app/Models/Program.php');
+    $code = is_file($path) ? (string) file_get_contents($path) : '';
+    $start = strpos($code, 'function hasSignups');
+
+    if ($start === false) {
+        return false;
+    }
+
+    $end = strpos($code, "\n    }", $start);
+
+    return str_contains(substr($code, $start, $end === false ? null : $end - $start), $relationship);
+};
+
 return Feature::make('requests')
     ->title('Requests')
     ->section(Section::Signups)
     ->level(2)
-    ->needs(['signup-modes', 'submissions'])
+    ->needs(['applications'])
     ->summary('Programs with the request mode take requests, such as parties and school bookings. Staff reply to each one.')
-    ->teaches(['Comparing two designs', 'Guest forms', 'Blade slots', 'Conditional validation rules', 'Counting with a condition', 'mailto links'])
+    ->teaches(['Comparing two designs', 'Service classes', 'Guest forms', 'Blade slots', 'Conditional validation rules', 'Counting with a condition', 'mailto links'])
     ->test('RequestsTest.php')
     ->intro(<<<'TEXT'
         Some programs start with a conversation. A family wants a birthday party at the centre. A teacher wants to book a class visit. They do not register or pay yet. They send a request, and staff reply: "Saturday the 5th is free. Here is the price."
@@ -23,12 +40,15 @@ return Feature::make('requests')
         - **Who sends it.** An application needs an account, because staff decide about a person. A request does not. A parent who plans one party must not create an account first. So a request stores a `name` and an `email`, and `user_id` is nullable.
         - **What happens next.** An application waits for one decision: accepted or declined. A request is a conversation: open, replied, closed, and maybe open again. The states are different, and so is what staff do with them.
 
-        One model for both would need a nullable user and a `name` that applications never use, two sets of states in one column, and an `if` on the type in every controller and view. Two small models are easier to read and to change. They share the parts that are the same: the form, the version, the submission and `FormVersion::submit()`.
+        One model for both would need a nullable user and a `name` that applications never use, two sets of states in one column, and an `if` on the type in every controller and view. Two small models are easier to read and to change. They share the parts that are the same: the form, the version, the submission and `FormSubmissionService`.
+
+        The work goes in a service again, as in Applications: `InquiryService`. `send()` saves the answers and the request. `changeStatus()` saves a new status. The controllers validate, call the service, and redirect. See `/guide/services` for the rule.
 
         The model is called `Inquiry`, not `Request`. Laravel already has `Illuminate\Http\Request` in every controller. Two classes with the same name in one file mean an alias and confusion.
         TEXT)
     ->docs('https://laravel.com/docs/blade#slots', 'Laravel docs: Slots')
     ->docs('https://laravel.com/docs/controllers#restful-nested-resources', 'Laravel docs: Nested resources')
+    ->docs('/guide/services', 'BLSC guide: Controllers and services')
     ->reflect([
         'Applications and requests look similar. Why are they two models? What would one model cost? Name one thing that would be harder to change.',
         'Staff reply with their own email program, and the app only records the status. What do staff gain from that? What do they lose?',
@@ -41,9 +61,11 @@ return Feature::make('requests')
             ->explain(<<<'TEXT'
                 You start with the test. Run the command below. It copies `tests/Feature/RequestsTest.php` into the app.
 
-                Read the test next to `ApplicationsTest.php`. Many rules match: the button, the refused modes, the staff list. Now find the differences. A guest sends a request with no login. A guest gives a name and an email. A logged-in visitor does not type them again. Staff change the status in any direction, and no email goes to the visitor.
+                Read the test next to `ApplicationsTest.php`. Many rules match: the button, the refused modes, the staff list. Now find the differences. A guest sends a request with no login. A guest gives a name and an email. A logged-in visitor does not type them again. Staff change the status in any direction, and no email goes to the visitor. Last, staff cannot delete a program that has a request, as for an application.
 
-                Look at the rule "staff get the notice of the request form". You write no code for it. The notice is in `FormVersion::submit()` since the Applications feature, so every sign-up that uses `submit()` gets it.
+                Look at the rule "staff get the notice of the request form". You write no code for it. The notice is in `FormSubmissionService::submit()`, so every sign-up that saves its answers there gets it.
+
+                The test does not call the service, but later features do. So keep its names: `InquiryService` with `send()` and `changeStatus()`.
                 TEXT)
             ->think('Make a list of what applications and requests share, and what they do not. Which list is longer?')
             ->tryIt('Run `php artisan test tests/Feature/RequestsTest.php`. All the rules fail, because the `Inquiry` model does not exist yet.')
@@ -125,7 +147,7 @@ return Feature::make('requests')
             ->explain(<<<'TEXT'
                 Open `app/Models/Inquiry.php`. Cast `status` to `InquiryStatus`, and give it the default `open` in `$attributes`. Add `program()`, `user()` and `submission()`. Add `inquiries(): HasMany` to `Program`.
 
-                This time, `status` can be in `#[Fillable]`. A request has no decision to record, so staff change the status with a plain `update()`. Compare that with `Application::decide()`, which also saves who decided and when.
+                This time, `status` can be in `#[Fillable]`. A request has no decision to record, so `InquiryService::changeStatus()` saves the status with a plain `update()` in a later step. Compare that with `ApplicationService::decide()`, which also saves who decided and when.
 
                 In the factory, make a program with the `request` mode, a fake name and a safe email, and a submission. Leave `user_id` as `null`: the usual request comes from a guest.
                 TEXT)
@@ -181,7 +203,7 @@ return Feature::make('requests')
                     {{ $slot }}
 
                     @foreach ($fields as $field)
-                        <x-dynamic-component :component="App\Enums\FieldType::from($field['type'])->component()" :field="$field" />
+                        {{-- The fields stay as they are. --}}
                     @endforeach
 
                     <april:button type="submit">{{ $submit }}</april:button>
@@ -192,6 +214,46 @@ return Feature::make('requests')
             ->docs('https://laravel.com/docs/blade#slots', 'Laravel docs: Slots')
             ->check(Check::fileContains('resources/views/components/dynamic-form.blade.php', '$slot')),
 
+        Step::make('Save a request in a service')
+            ->run('php artisan make:class Services/InquiryService')
+            ->explain(<<<'TEXT'
+                Sending a request is two writes, as applying is: save the answers as a submission, then save the request that points to it. Put both in a new service, `InquiryService`, with one method for now: `send(Program $program, FormVersion $version, array $validated, ?User $user): Inquiry`.
+
+                Copy the shape of `ApplicationService::apply()`. Ask for `FormSubmissionService` in the constructor, call its `submit()`, and wrap both writes in `DB::transaction()`. `submit()` also sends the notice to `notify_email`, so staff hear about each request with no extra code.
+
+                Two things are new. The user can be `null`, because a guest can send a request. And the request stores a `name` and an `email`. For a logged-in visitor, take them from the account. For a guest, take them from the validated input. Then every request has the two columns, and the staff pages read them the same way.
+
+                The service trusts its input, as `ApplicationService` does. The controller checks the mode and validates, in the next step.
+                TEXT)
+            ->think('`ApplicationService::apply()` and `send()` look alike. Why not one service for both? What would its methods need to know?')
+            ->hint('`$user->name ?? $validated[\'name\']` takes the name from the account, or from the form for a guest. `??` does not fail when `$user` is `null`.')
+            ->code(<<<'PHP'
+                class InquiryService
+                {
+                    public function __construct(private FormSubmissionService $submissions) {}
+
+                    /**
+                     * Save the answers and the request together. A logged-in visitor's name and email come from the account.
+                     *
+                     * @param  array<string, mixed>  $validated  the answers, and the name and email of a guest
+                     */
+                    public function send(Program $program, FormVersion $version, array $validated, ?User $user): Inquiry
+                    {
+                        return DB::transaction(fn () => $program->inquiries()->create([
+                            'user_id' => $user?->id,
+                            'name' => $user->name ?? $validated['name'],
+                            'email' => $user->email ?? $validated['email'],
+                            'submission_id' => $this->submissions->submit($version, $validated, $user)->id,
+                        ]));
+                    }
+                }
+                PHP)
+            ->tryIt('In tinker, run `$program = App\Models\Program::factory()->create([\'signup_mode\' => \'request\']); $version = App\Models\Form::firstWhere(\'slug\', \'contact\')->currentVersion; app(App\Services\InquiryService::class)->send($program, $version, [\'name\' => \'Sam\', \'email\' => \'sam@example.com\', \'message\' => \'Hi\'], null)->only([\'name\', \'email\', \'user_id\'])`. You see the name and the email of the guest, and no user.')
+            ->commit('Save requests in InquiryService')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/database#database-transactions', 'Laravel docs: Database transactions')
+            ->check(Check::fileContains('app/Services/InquiryService.php', 'function send')),
+
         Step::make('Let anyone send a request')
             ->run('php artisan make:controller InquiryController')
             ->explain(<<<'TEXT'
@@ -201,16 +263,19 @@ return Feature::make('requests')
 
                 In `create()`, show `resources/views/inquiries/create.blade.php`. Inside `<x-dynamic-form>`, use `@auth` and `@else`. A guest sees two `<x-form-field>` inputs: `name` ("Your name") and `email` ("Your email address"). A logged-in visitor sees "We will reply to" and the email of the account.
 
-                In `store()`, build one list of rules: the form rules from `$version->rules()`, plus `name` and `email` for a guest. Validate them in one call, so the visitor sees every error at once. Then create the inquiry. For a logged-in visitor, take the name and email from the account. Last, send the visitor back to the program page with a status message.
+                In `create()`, pass the fields from `$submissions->fields($version, $request->user())`, as `ApplicationController::create()` does.
+
+                In `store()`, build one list of rules: the form rules from `FormRules::for($fields)`, plus `name` and `email` for a guest. Validate them in one call, so the visitor sees every error at once. Then call `InquiryService::send()`. Last, send the visitor back to the program page with a status message.
                 TEXT)
             ->think('The form fields and the contact inputs share one request. What happens if staff add a field with the key `email` to the party form? How do the keys in the seeded library avoid that?')
-            ->hint('`$user ? [] : [\'name\' => [...], \'email\' => [...]]` gives the extra rules only to a guest. Spread both lists into one array: `[...$version->rules(), ...$contact]`.')
-            ->hint('`$user->name ?? $validated[\'name\']` takes the name from the account, or from the form for a guest. `??` does not fail when `$user` is `null`.')
+            ->hint('`$user ? [] : [\'name\' => [...], \'email\' => [...]]` gives the extra rules only to a guest. Spread both lists into one array: `[...FormRules::for($fields), ...$contact]`.')
+            ->hint('Give the labels of the two inputs too, so the errors say "Your name" and not "name": `[...array_column($fields, \'label\', \'key\'), \'name\' => \'Your name\', \'email\' => \'Your email address\']`.')
             ->code(<<<'PHP'
-                public function store(Request $request, Category $category, Program $program): RedirectResponse
+                public function store(Request $request, Category $category, Program $program, FormSubmissionService $submissions, InquiryService $inquiries): RedirectResponse
                 {
                     $version = $program->signupForm(SignupMode::Request) ?? abort(404);
                     $user = $request->user();
+                    $fields = $submissions->fields($version, $user);
 
                     // A guest tells us who they are. A logged-in person already did.
                     $contact = $user ? [] : [
@@ -218,14 +283,13 @@ return Feature::make('requests')
                         'email' => ['required', 'email', 'max:255'],
                     ];
 
-                    $validated = $request->validate([...$version->rules(), ...$contact], [], $version->labels());
+                    $validated = $request->validate(
+                        [...FormRules::for($fields), ...$contact],
+                        FormRules::messages(),
+                        [...array_column($fields, 'label', 'key'), 'name' => 'Your name', 'email' => 'Your email address'],
+                    );
 
-                    $program->inquiries()->create([
-                        'user_id' => $user?->id,
-                        'name' => $user->name ?? $validated['name'],
-                        'email' => $user->email ?? $validated['email'],
-                        'submission_id' => $version->submit($validated, $user)->id,
-                    ]);
+                    $inquiries->send($program, $version, $validated, $user);
 
                     return to_route('programs.show', [$category, $program])
                         ->with('status', 'Thank you. We received your request and will reply by email.');
@@ -255,7 +319,7 @@ return Feature::make('requests')
                         <slot:title>Send a request</slot:title>
                         <slot:description class="space-y-3">
                             <p>Tell us what you need. You do not need an account. Staff reply by email.</p>
-                            <april:button-link href="{{ route('inquiries.create', [$program->category, $program]) }}">Send a request</april:button-link>
+                            <april:button-link href="{{ route('inquiries.create', [$program->category, $program]) }}" wire:navigate>Send a request</april:button-link>
                         </slot:description>
                     </april:alert>
                 @else
@@ -267,14 +331,23 @@ return Feature::make('requests')
 
         Step::make('Seed a party program and its form')
             ->explain(<<<'TEXT'
-                No seeded program uses the `request` mode yet. In `ProgramSeeder`, add a "Parties" category and a "Birthday Parties" program with `'signup_mode' => 'request'`. A party has no fixed dates, so give it no sessions.
+                No seeded program uses the `request` mode yet. `ProgramSeeder` has a "Parties" category with no programs. Do not add the program to `ProgramSeeder`: `ProgramsTest` counts the programs that it seeds. Put the sign-up data in `SignupFormSeeder`, which you wrote for QUARKS.
 
-                In `SignupFormSeeder`, add two fields to the library: `party_date` (a date, "Preferred party date") and `guest_count` (a number, "Number of guests"). Then call `programForm()` again for `birthday-parties`, with a "Party request" form. You wrote that method for QUARKS. Now it pays off.
+                In `SignupFormSeeder`, find the "Parties" category and give it a "Birthday Parties" program with `'signup_mode' => 'request'`. Use `updateOrCreate()` on the slug, so the seeder is still safe to run more than once. A party has no fixed dates, so the program has no sessions.
+
+                Then add two fields to the library: `party_date` (a date, "Preferred party date") and `guest_count` (a number, "Number of guests"), both in the `signup` scope. Call `programForm()` again for `birthday-parties`, with a "Party request" form. You wrote that method for QUARKS. Now it pays off.
 
                 Give the form a `notify_email`, so staff get a notice for each new request.
                 TEXT)
             ->think('Why does the party form not ask for the name and the email of the visitor?')
+            ->hint('`Category::where(\'slug\', \'parties\')->firstOrFail()->programs()->updateOrCreate([\'slug\' => \'birthday-parties\'], [...])` fills in the category for you.')
             ->code(<<<'PHP'
+                Category::where('slug', 'parties')->firstOrFail()->programs()->updateOrCreate(['slug' => 'birthday-parties'], [
+                    'name' => 'Birthday Parties',
+                    'summary' => 'A science party for your child and their friends, at the centre.',
+                    'signup_mode' => 'request',
+                ]);
+
                 $this->programForm('birthday-parties', [
                     'name' => 'Party request',
                     'description' => 'Tell us about the party. We reply within two business days.',
@@ -284,22 +357,22 @@ return Feature::make('requests')
             ->tryIt(<<<'TEXT'
                 Run `php artisan migrate:fresh --seed` and `composer dev`. Log out, and open http://localhost:8000/programs/parties/birthday-parties. Click "Send a request".
 
-                Send the form empty. You see errors for your name, your email and the party date, all at once. Fill it in and send. The program page says "Thank you. We received your request".
+                Send the form empty. You see errors for your name, your email, the party date and the number of guests, all at once. Fill it in and send. The program page says "Thank you. We received your request".
                 TEXT)
             ->commit('Seed a party program and request form')
             ->docs('https://laravel.com/docs/seeding#writing-seeders', 'Laravel docs: Writing seeders')
-            ->check(Check::fileContains('database/seeders/ProgramSeeder.php', "'signup_mode' => 'request'")),
+            ->check(Check::fileContains('database/seeders/SignupFormSeeder.php', "'signup_mode' => 'request'")),
 
         Step::make('Show the requests to staff')
             ->run('php artisan make:controller Admin/InquiryController')
             ->explain(<<<'TEXT'
-                Copy the shape of the staff pages for applications. Add `Route::resource('programs.inquiries', Admin\InquiryController::class)->shallow()->only(['index', 'show', 'update'])` to the staff group.
+                Copy the shape of the staff pages for applications. Add `Route::resource('programs.inquiries', Admin\InquiryController::class)->shallow()->only(['index', 'show'])` to the staff group. A later step adds `update`.
 
-                `index()` lists the requests of one program, newest first, with the name, the email and a status badge. `show()` shows who sent it, if they have an account, and the answers. Use `<x-admin.answers>`, the component from the Applications feature.
+                `index()` lists the requests of one program, newest first, with the name, the email and a status badge. `show()` shows who sent it, if they have an account, and the answers. Use `<x-admin.answers>`, the component from the Applications feature. These pages only read data, so they need no service.
 
                 Staff reply with a **Reply by email** button: a `mailto:` link with the visitor's email and a subject. The staff member's email program opens, and the conversation stays in the centre's mailbox, with the history of every message. The app does not need to be an email program.
 
-                In the program list of the admin, add the requests to the "Sign-ups" column. Staff care about the requests that wait for them, so count only the open ones. `withCount()` takes a condition: `'inquiries as open_inquiries_count' => fn ($query) => $query->where('status', InquiryStatus::Open)`.
+                In the staff program list, the `admin.program-list` component, add the requests to the "Sign-ups" column. Staff care about the requests that wait for them, so count only the open ones. `withCount()` takes a condition: `'inquiries as open_inquiries_count' => fn ($query) => $query->where('status', InquiryStatus::Open)`.
                 TEXT)
             ->think('The subject in the `mailto:` link holds the program name. Why must you encode it with `rawurlencode()`?')
             ->hint('`as open_inquiries_count` names the count. The view reads `$program->open_inquiries_count`.')
@@ -307,8 +380,8 @@ return Feature::make('requests')
             ->code(<<<'PHP'
                 <april:button-link href="mailto:{{ $inquiry->email }}?subject={{ rawurlencode('Your request: '.$inquiry->program->name) }}">Reply by email</april:button-link>
 
-                // Admin\ProgramController::index()
-                Program::with('category')->withCount([
+                // programs() in resources/views/components/admin/⚡program-list.blade.php
+                Program::search($this->search)->with('category')->withCount([
                     'sessions',
                     'applications',
                     'inquiries as open_inquiries_count' => fn ($query) => $query->where('status', InquiryStatus::Open),
@@ -320,26 +393,50 @@ return Feature::make('requests')
             ->docs('https://laravel.com/docs/controllers#shallow-nesting', 'Laravel docs: Shallow nesting')
             ->check(Check::route('admin.programs.inquiries.index', 'admin.inquiries.show')),
 
-        Step::make('Mark a request as replied or closed')
+        Step::make('Change the status in the service')
             ->explain(<<<'TEXT'
                 After staff reply, they mark the request as replied. When the conversation ends, they close it. If the family writes back, staff open it again.
 
-                On the show page, add one form with `@method('PATCH')`. Loop over `InquiryStatus::cases()`, and show a submit button for each status except the current one, such as "Mark as replied". Each button has `name="status"` and its value.
+                A new status is a write, so it goes in `InquiryService` too. Add `changeStatus(Inquiry $inquiry, InquiryStatus $status): void`. It saves the status with `update()`, because `status` is fillable.
 
-                In `update()`, validate with `Rule::enum(InquiryStatus::class)`. Here every state is allowed, so you do not need `only()`. Then `$inquiry->update($validated)`.
+                The method is one line. Why a service for one line? Because the controller then has no write in it, and every caller changes the status in the same way. When a later feature does more on a status change, for example a note to the family, it changes this one method and no controller.
 
                 No email goes to the visitor. The reply itself is the email.
                 TEXT)
+            ->think('`ApplicationService::decide()` saves the staff member and the time. `changeStatus()` does not. What would you add here if the centre wanted to know who closed each request?')
+            ->code(<<<'PHP'
+                /**
+                 * Mark the request as open, replied or closed. Any direction is allowed.
+                 */
+                public function changeStatus(Inquiry $inquiry, InquiryStatus $status): void
+                {
+                    $inquiry->update(['status' => $status]);
+                }
+                PHP)
+            ->tryIt('In tinker, run `$inquiry = App\Models\Inquiry::first(); app(App\Services\InquiryService::class)->changeStatus($inquiry, App\Enums\InquiryStatus::Replied); $inquiry->fresh()->status`. You see the `Replied` case.')
+            ->commit('Change the status of a request in InquiryService')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->check(Check::fileContains('app/Services/InquiryService.php', 'function changeStatus')),
+
+        Step::make('Mark a request as replied or closed')
+            ->explain(<<<'TEXT'
+                Add `update` to the staff route: `->only(['index', 'show', 'update'])`.
+
+                On the show page, add one form with `@method('PATCH')`. Loop over `InquiryStatus::cases()`, and show a submit button for each status except the current one, such as "Mark as replied". Each button has `name="status"` and its value.
+
+                In `update()`, validate with `Rule::enum(InquiryStatus::class)`. Here every state is allowed, so you do not need `only()`. Then call `InquiryService::changeStatus()` and redirect back to the request.
+                TEXT)
             ->think('In applications, staff could not go back to `submitted`. Here, staff can go back to `open`. Why is that right for each one?')
             ->hint('`@unless ($inquiry->status === $status)` hides the button for the current status.')
+            ->hint('`InquiryStatus::from($validated[\'status\'])` turns the validated string into the enum that the service takes.')
             ->code(<<<'PHP'
-                public function update(Request $request, Inquiry $inquiry): RedirectResponse
+                public function update(Request $request, Inquiry $inquiry, InquiryService $inquiries): RedirectResponse
                 {
                     $validated = $request->validate([
                         'status' => ['required', Rule::enum(InquiryStatus::class)],
                     ]);
 
-                    $inquiry->update($validated);
+                    $inquiries->changeStatus($inquiry, InquiryStatus::from($validated['status']));
 
                     return to_route('admin.inquiries.show', $inquiry)->with('status', 'Status saved.');
                 }
@@ -349,8 +446,27 @@ return Feature::make('requests')
             ->docs('https://laravel.com/docs/validation#rule-enum', 'Laravel docs: The enum rule')
             ->check(Check::all(
                 Check::route('admin.inquiries.update'),
-                Check::fileContains('app/Http/Controllers/Admin/InquiryController.php', 'Rule::enum(InquiryStatus::class)'),
+                Check::fileContains('app/Http/Controllers/Admin/InquiryController.php', '->changeStatus('),
             )),
+
+        Step::make('Keep programs that have requests')
+            ->explain(<<<'TEXT'
+                A request keeps its program too: the `inquiries` migration restricts the delete. Try it. As staff, delete Birthday Parties, which has your request. You see an error page again.
+
+                In Applications, you wrote `Program::hasSignups()` for this. A request is a new kind of sign-up, so add one line to it. `ProgramService` and `Admin\ProgramController` do not change. They already refuse with a message. This is the gain of one general question: a new kind of sign-up changes one method, and every place that asks it is right again.
+                TEXT)
+            ->think('Imagine one exception for each kind of sign-up instead. Which files would this step change then?')
+            ->hint('`||` joins two yes-or-no questions. PHP stops at the first `true`, so a program with an application makes only one query.')
+            ->code(<<<'PHP'
+                public function hasSignups(): bool
+                {
+                    return $this->applications()->exists()
+                        || $this->inquiries()->exists();
+                }
+                PHP)
+            ->tryIt('Run `php artisan test --filter="cannot delete a program"`. Both rules pass. As staff, try to delete Birthday Parties again. You see the message, and the program stays.')
+            ->commit('Keep programs with requests')
+            ->check(fn (): bool => $hasSignupsAsks('inquiries')),
 
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify requests')

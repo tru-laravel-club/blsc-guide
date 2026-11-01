@@ -9,7 +9,8 @@ use App\Models\Order;
 use App\Models\Program;
 use App\Models\ProgramSession;
 use App\Models\User;
-use App\Pricing;
+use App\Services\FormService;
+use App\Services\PricingService;
 use Illuminate\Support\Carbon;
 
 /*
@@ -17,7 +18,7 @@ use Illuminate\Support\Carbon;
 |
 | A session can have a member price. A parent pays it when the family has an
 | active membership on the first day of the session. The server decides the
-| price, and one class holds the rule.
+| price, and one service holds the rule.
 */
 
 beforeEach(function () {
@@ -35,7 +36,7 @@ function memberPricedSession(array $attributes = []): ProgramSession
 {
     $form = Form::factory()->create();
     $form->fields()->attach(Field::factory()->create(['key' => 'school', 'scope' => FieldScope::Child]), ['position' => 0, 'required' => false]);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     $program = Program::factory()->create(['signup_mode' => 'register', 'form_id' => $form->id, 'age_min' => null, 'age_max' => null]);
 
@@ -125,14 +126,16 @@ test('a session without a member price charges members the normal price', functi
     expect(checkOutRegistration($parent, $session)->total_cents)->toBe(15000);
 });
 
-test('one class decides the price for every buyer', function () {
+test('one service decides the price for every buyer', function () {
     $session = memberPricedSession();
     $member = User::factory()->create();
     Membership::factory()->for($member)->create(['starts_on' => '2026-01-10', 'ends_on' => '2027-01-09']);
 
-    expect(Pricing::for($session, $member))->toBe(13500)
-        ->and(Pricing::for($session, User::factory()->create()))->toBe(15000)
-        ->and(Pricing::for($session, null))->toBe(15000);
+    $pricing = app(PricingService::class);
+
+    expect($pricing->for($session, $member))->toBe(13500)
+        ->and($pricing->for($session, User::factory()->create()))->toBe(15000)
+        ->and($pricing->for($session, null))->toBe(15000);
 });
 
 test('the registration page shows a member the price that they pay', function () {

@@ -11,21 +11,21 @@ return Feature::make('member-pricing')
     ->level(3)
     ->needs(['membership-plans', 'registrations'])
     ->summary('Members get the member price of a session automatically. Parents do not confirm it by hand.')
-    ->teaches(['Business rules in one class', 'Static methods', 'Dates in rules', 'Testing with travelTo'])
+    ->teaches(['Business rules in one service', 'Service classes', 'Dates in rules', 'Testing with travelTo'])
     ->test('MemberPricingTest.php')
     ->intro(<<<'TEXT'
         Each session has a price and an optional member price, such as $150.00 and $135.00. The program page shows both. But today every parent pays $150.00, because `Registration::priceCents()` returns the normal price. In this feature, a member pays the member price, and nobody has to check it by hand.
 
         The rule sounds simple: "members pay less". The details are where bugs hide. Which day counts? A parent registers in November for a club that starts in December. If the membership ends on November 30, the family is not a member when the club runs. If a renewal starts on November 20, the family is a member when the club runs, but not today. So the rule uses the first day of the session, not today.
 
-        The price is a business rule, and the centre will add more rules. A sibling discount, an early-bird price or a staff price are all possible next year. So the rule lives in one class, `App\Pricing`, with one method: `Pricing::for(ProgramSession $session, ?User $user): int`. `Registration::priceCents()` calls it. The registration page calls it too, so the parent sees the price before they pay. When the centre adds a rule, a contributor changes one class.
+        The price is a business rule, and the centre will add more rules. A sibling discount, an early-bird price or a staff price are all possible next year. So the rule lives in one service, `App\Services\PricingService`, with one method: `for(ProgramSession $session, ?User $user): int` (see `/guide/services`). `Registration::priceCents()` asks it. The registration page asks it too, so the parent sees the price before they pay. When the centre adds a rule, a contributor changes one class.
 
         Follow the price through a request. The cart asks each item for `priceCents($user)` when it shows the total. Checkout asks again and copies the answer into each order item. The browser never sends a price. So the member price is safe from a changed form, and the order keeps the price that the parent saw.
         TEXT)
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/22', 'Laravel From Scratch, episode 22: How to Get Started Testing Your Code')
     ->docs('https://laravel.com/docs/mocking#interacting-with-time', 'Laravel docs: Interacting with time')
     ->reflect([
-        'The centre adds a sibling discount: the second child in the same order pays 10% less. Where does it go? What does `Pricing::for()` need to know that it does not know today?',
+        'The centre adds a sibling discount: the second child in the same order pays 10% less. Where does it go? What does `PricingService::for()` need to know that it does not know today?',
         'Why does the rule use the first day of the session and not today? Describe one family that each choice treats unfairly.',
         'The order item copies the price at checkout. What happens to a paid order when the membership expires a week later? Why is that correct?',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
@@ -38,17 +38,18 @@ return Feature::make('member-pricing')
 
                 Read the dates in the test with care. `beforeEach()` sets today to November 15, 2026. Every session starts on December 1, 2026. Then look at the two rules about memberships that end and start between those days. In one rule, `activeMembership()` says "yes" today, but the parent pays the normal price. In the other, it says "no" today, but the parent pays the member price.
 
-                Most rules go through the routes: a parent registers a child and checks out, and the test reads the order. One rule calls `Pricing::for()` directly. It fixes the name of the class and the method, so later features can use them.
+                Most rules go through the routes: a parent registers a child and checks out, and the test reads the order. One rule calls `PricingService::for()` directly. It fixes the name of the service and the method, so later features can use them.
                 TEXT)
             ->think('The helper makes the program with `age_min` and `age_max` set to `null`. What would go wrong in this test without that?')
-            ->tryIt('Run `php artisan test tests/Feature/MemberPricingTest.php`. Some rules fail, because members still pay $150.00 and `App\Pricing` does not exist.')
+            ->tryIt('Run `php artisan test tests/Feature/MemberPricingTest.php`. Some rules fail, because members still pay $150.00 and `PricingService` does not exist.')
             ->commit('Add the member pricing acceptance test')
             ->docs('https://laravel.com/docs/mocking#interacting-with-time', 'Laravel docs: Interacting with time')
             ->check(Check::fileExists('tests/Feature/MemberPricingTest.php')),
 
-        Step::make('Write the price rule in one class')
+        Step::make('Write the price rule in one service')
+            ->run('php artisan make:class Services/PricingService')
             ->explain(<<<'TEXT'
-                Create `app/Pricing.php` in the `App` namespace, next to `Cart.php`. Give it one static method: `for(ProgramSession $session, ?User $user): int`.
+                Run the command below. It makes `app/Services/PricingService.php`. Give it one method: `for(ProgramSession $session, ?User $user): int`.
 
                 The method answers one question: what does this buyer pay for this session? Work it out in this order:
 
@@ -60,12 +61,13 @@ return Feature::make('member-pricing')
 
                 Add one guard: a member never pays more than the normal price. Staff type both prices by hand, and a typing error must not punish members. `min()` does it.
 
-                Why a static method? `Pricing` keeps no state. It reads the session and the user, and returns a number. `FormRules::for()` works in the same way.
+                The method changes no data. Why is it a service and not a helper on the model? A price is a business rule that grows: a sibling discount needs the cart, and a staff price needs the staff role. A service can ask for other services in its constructor when that day comes. Every place that needs a price asks this one service (see `/guide/services`).
                 TEXT)
-            ->think('`$user?->activeMembership(...)` uses `?->`. What does the expression give when `$user` is `null`?')
+            ->think('The rule needs a membership on the first day of the session. Why not put the method on `ProgramSession`, or in the registration controller? Who else asks for a price?')
+            ->hint('`$user?->activeMembership(...)` uses `?->`. The whole expression gives `null` when `$user` is `null`.')
             ->hint('Return early: `if ($session->member_price_cents === null || $user?->activeMembership($session->starts_on) === null) { return $session->price_cents; }`.')
             ->code(<<<'PHP'
-                namespace App;
+                namespace App\Services;
 
                 use App\Models\ProgramSession;
                 use App\Models\User;
@@ -73,12 +75,12 @@ return Feature::make('member-pricing')
                 /**
                  * Decides what a buyer pays for a session. Every price rule for sessions lives here.
                  */
-                final class Pricing
+                class PricingService
                 {
                     /**
                      * The price in cents for this buyer. A guest buyer is null.
                      */
-                    public static function for(ProgramSession $session, ?User $user): int
+                    public function for(ProgramSession $session, ?User $user): int
                     {
                         if ($session->member_price_cents === null || $user?->activeMembership($session->starts_on) === null) {
                             return $session->price_cents;
@@ -88,35 +90,38 @@ return Feature::make('member-pricing')
                     }
                 }
                 PHP)
-            ->tryIt('In `php artisan tinker`, run `App\Pricing::for(App\Models\ProgramSession::first(), null)`. You see the normal price of the first session in cents.')
-            ->commit('Add the Pricing class')
-            ->docs('https://www.php.net/manual/en/language.oop5.static.php', 'PHP manual: Static methods')
+            ->tryIt('In `php artisan tinker`, run `app(App\Services\PricingService::class)->for(App\Models\ProgramSession::first(), null)`. You see the normal price of the first session in cents.')
+            ->commit('Add the pricing service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
             ->docs('https://www.php.net/manual/en/language.oop5.basic.php#language.oop5.basic.nullsafe', 'PHP manual: The nullsafe operator')
-            ->check(Check::fileContains('app/Pricing.php', 'function for')),
+            ->check(Check::fileContains('app/Services/PricingService.php', 'function for')),
 
         Step::make('Let the registration ask for its price')
             ->explain(<<<'TEXT'
-                Open `app/Models/Registration.php`. `priceCents(?User $user)` returns `$this->session->price_cents`. Change it to return `Pricing::for($this->session, $user)`.
+                Open `app/Models/Registration.php`. `priceCents(?User $user)` returns `$this->session->price_cents`. Change it to ask the service: `app(PricingService::class)->for($this->session, $user)`.
 
-                That is the whole change for the cart. The cart page, the total and checkout all call `priceCents()` with the user who is logged in. You do not touch them.
+                A model cannot ask for a service in a method parameter, as a controller does. `app()` asks the Laravel container for the service instead. The method still only reads, so it stays a read-only helper on the model.
+
+                That is the whole change for the cart. `CartService`, the total and `OrderService` all call `priceCents()` with the buyer. You do not touch them.
 
                 Notice which user the cart passes: the parent who buys, not the child. A membership belongs to the account, so this is the right person.
                 TEXT)
             ->think('A parent puts a registration in the cart, then buys a membership in the same cart. Which price does the registration get at checkout? Why?')
-            ->hint('Import the class at the top with `use App\Pricing;`.')
+            ->hint('Import the class at the top with `use App\Services\PricingService;`.')
             ->code(<<<'PHP'
                 public function priceCents(?User $user): int
                 {
-                    return Pricing::for($this->session, $user);
+                    return app(PricingService::class)->for($this->session, $user);
                 }
                 PHP)
             ->tryIt('Run `php artisan test tests/Feature/MemberPricingTest.php`. The rules about orders pass now. One rule still fails: the registration page does not show the price yet.')
             ->commit('Use member prices for registrations')
-            ->check(Check::fileContains('app/Models/Registration.php', 'Pricing::for')),
+            ->docs('https://laravel.com/docs/container#the-make-method', 'Laravel docs: The make method and the app helper')
+            ->check(Check::fileContains('app/Models/Registration.php', 'PricingService')),
 
         Step::make('Show the price on the registration page')
             ->explain(<<<'TEXT'
-                A parent must see the price before they answer the form. In `RegistrationController::create()`, pass `Pricing::for($session, $request->user())` to the view as `price`.
+                A parent must see the price before they answer the form. In `RegistrationController::create()`, ask for `PricingService $pricing` as a parameter, as you do for the other services. Pass `$pricing->for($session, $request->user())` to the view as `price`.
 
                 In `registrations/create.blade.php`, add a line under the header: "Your price: $135.00 (the member price)". Show "(the member price)" only when the price is lower than the normal price. Use the `<x-money>` component to format the cents.
 
@@ -135,11 +140,11 @@ return Feature::make('member-pricing')
             ->tryIt(<<<'TEXT'
                 Log in as `test@example.com` and open a club registration page. You see the normal price.
 
-                Then buy a membership on http://localhost:8000/memberships and pay with the fake gateway. Open the registration page again. You see the member price. Register a child, and the cart shows the same price.
+                Then buy the Family membership on http://localhost:8000/memberships, and pay with the fake gateway. Open the registration page again. You see the member price. Register a child, and the cart shows the same price.
                 TEXT)
             ->commit('Show the price on the registration page')
             ->check(Check::all(
-                Check::fileContains('app/Http/Controllers/RegistrationController.php', 'Pricing::for'),
+                Check::fileContains('app/Http/Controllers/RegistrationController.php', 'PricingService'),
                 Check::fileContains('resources/views/registrations/create.blade.php', '$price'),
             )),
 

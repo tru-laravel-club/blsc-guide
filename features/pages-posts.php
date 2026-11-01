@@ -11,7 +11,7 @@ return Feature::make('pages-posts')
     ->level(2)
     ->needs(['safe-html', 'staff-roles'])
     ->summary('Staff write pages and posts with the April UI editor. Staff use posts for news and science articles.')
-    ->teaches(['Enum casts', 'Date casts', 'Local scopes', 'Pagination', 'Route model binding', 'Time in tests'])
+    ->teaches(['Enum casts', 'Date casts', 'Local scopes', 'Service classes', 'Pagination', 'Route model binding', 'Time in tests'])
     ->test('PagesPostsTest.php')
     ->intro(<<<'TEXT'
         The centre has news to share: a new club, a science story, photos from a camp. It also has pages that change only a few times a year, such as "Volunteer with us". Today a developer must write each one in a Blade view. In this feature, staff write them in the admin area.
@@ -22,7 +22,7 @@ return Feature::make('pages-posts')
 
         The path of a post:
 
-        1. Staff write the post at `/admin/pages/create`. The body uses `<x-editor>` from Safe HTML, and the `SafeHtml` cast cleans it.
+        1. Staff write the post at `/admin/pages/create`. The body uses `<x-editor>` from Safe HTML. The controller gives the valid fields to `PageService`, which saves the post, and the `SafeHtml` cast cleans the body.
         2. When the publish date has passed, the `published()` scope lets the post through.
         3. `/news` lists the published posts, newest first, ten on each page. `/news/{slug}` shows one post. `/pages/{slug}` shows one page.
         TEXT)
@@ -53,12 +53,13 @@ return Feature::make('pages-posts')
             ->check(Check::fileExists('tests/Feature/PagesPostsTest.php')),
 
         Step::make('Add the PageType enum')
+            ->run('php artisan make:enum App/Enums/PageType --string')
             ->explain(<<<'TEXT'
-                Create `app/Enums/PageType.php`, a string-backed enum with two cases: `Page = 'page'` and `Post = 'post'`. The database stores the string value.
+                Create `app/Enums/PageType.php` with the command below. It is a string-backed enum with two cases: `Page = 'page'` and `Post = 'post'`. The database stores the string value.
 
                 Add a `label()` method for staff: "Page" and "News post". Add a `routeName()` method that returns the name of the public route for the type: `pages.show` or `news.show`. Then a view can link to any page without an `if`.
 
-                Program categories moved the program types from an enum into a table. Why is an enum right here? Because the code branches on the type: only posts go on `/news`. Staff cannot add a type that the code does not know.
+                Program categories moves the program types from an enum into a table, because the code does not need them. Why is an enum right here? Because the code branches on the type: only posts go on `/news`. Staff cannot add a type that the code does not know.
                 TEXT)
             ->think('Staff ask for a third type, "Science article". Does it need a new type, or is it a post with a different title? What would change in the code for a new type?')
             ->hint('A `match ($this)` returns one value for each case. PHPStan checks that the `match` covers every case.')
@@ -177,7 +178,7 @@ return Feature::make('pages-posts')
 
                 Add the three states that the test uses: `post()` sets the type, `draft()` sets `published_at` to `null`, and `scheduled()` sets it one week in the future. The states combine, so `Page::factory()->post()->scheduled()` is a scheduled post.
 
-                Then fill in `PageSeeder` with a published post, a scheduled post and a page. Call it from `DatabaseSeeder` after `ProgramSeeder`. Other contributors then see real examples after `migrate:fresh --seed`.
+                Then fill in `PageSeeder` with a published post, a scheduled post and a page with the slug `volunteer`. A later step opens `/pages/volunteer`. Call it from `DatabaseSeeder` after `ProgramSeeder`. Other contributors then see real examples after `migrate:fresh --seed`.
                 TEXT)
             ->think('Why is the default state "published", and not "draft"? Which tests would be longer with the other default?')
             ->hint('`fake()->unique()->sentence(3, false)` gives a short title. `rtrim($title, \'.\')` removes the full stop at the end.')
@@ -207,14 +208,56 @@ return Feature::make('pages-posts')
                 Check::fileContains('database/seeders/DatabaseSeeder.php', 'PageSeeder'),
             )),
 
+        Step::make('Write the page service')
+            ->run('php artisan make:class Services/PageService')
+            ->explain(<<<'TEXT'
+                Staff will create, change and delete pages. Follow the rule of the project: controllers do HTTP, services do the work. (`/guide/services` explains why.) So the saves go in a `PageService`, and the controller calls it.
+
+                Run the command below. Remove the empty constructor, and add three methods, like the ones in `ProgramService`:
+
+                - `create(array $data): Page` makes a page from the valid fields.
+                - `update(Page $page, array $data): void` changes a page.
+                - `delete(Page $page): void` deletes a page.
+
+                Today each method is one line. That is all right. The service is the one place where a page is saved, so the next feature has a place to add its work.
+                TEXT)
+            ->think('The Cover images feature stores a file each time staff save a page with a new image. Where does that code go? How many controller lines must change then?')
+            ->hint('Copy `app/Services/ProgramService.php`. Change the model and the names.')
+            ->code(<<<'PHP'
+                /**
+                 * @param  array<string, mixed>  $data  the validated fields of the page form
+                 */
+                public function create(array $data): Page
+                {
+                    return Page::create($data);
+                }
+
+                /**
+                 * @param  array<string, mixed>  $data  the validated fields of the page form
+                 */
+                public function update(Page $page, array $data): void
+                {
+                    $page->update($data);
+                }
+
+                public function delete(Page $page): void
+                {
+                    $page->delete();
+                }
+                PHP)
+            ->tryIt('In `php artisan tinker`, run `app(App\Services\PageService::class)->create([\'type\' => \'post\', \'title\' => \'Hello\', \'slug\' => \'hello\'])->status()`. You see `"Draft"`, because the page has no publish date. Then delete it through the service, too: `app(App\Services\PageService::class)->delete(App\Models\Page::firstWhere(\'slug\', \'hello\'))`.')
+            ->commit('Add the page service')
+            ->docs('https://laravel.com/docs/eloquent#mass-assignment', 'Laravel docs: Mass assignment')
+            ->check(Check::classExists('App\Services\PageService')),
+
         Step::make('Add the staff routes, request and controller')
             ->run('php artisan make:controller Admin/PageController --resource --model=Page')
             ->explain(<<<'TEXT'
-                Copy the pattern of the category admin. Add `Route::resource('pages', Admin\PageController::class)->except('show')` to the staff group in `routes/web.php`.
+                Copy the pattern of the program admin. Add `Route::resource('pages', Admin\PageController::class)->except('show')` to the staff group in `routes/web.php`.
 
-                Create `PageRequest` with `php artisan make:request PageRequest`. Copy `authorize()` and `prepareForValidation()` from `CategoryRequest`, and build the slug from the `title`. The type must be a case of the enum: use `Rule::enum(PageType::class)`. `published_at` is `nullable` and a `date`.
+                Create `PageRequest` with `php artisan make:request PageRequest`. Copy `authorize()` and `prepareForValidation()` from `ProgramRequest`, and build the slug from the `title`. A page has no `is_published` checkbox, so leave that line out. The type must be a case of the enum: use `Rule::enum(PageType::class)`. `published_at` is `nullable` and a `date`.
 
-                In the controller, `index()` lists every page and post, the newest change first. `create()` passes a new `Page` with the type `Post`, because staff write news more often than pages. `store()` and `update()` save `$request->validated()` and go back to the list.
+                In the controller, `index()` lists every page and post, the newest change first. `create()` passes a new `Page` with the type `Post`, because staff write news more often than pages. `store()`, `update()` and `destroy()` ask for `PageService $pages` as a parameter. They give it `$request->validated()` or the page, and go back to the list.
 
                 Watch for one trap. `validated()` returns only the fields that the request sent. The form always sends `published_at`, and an empty field becomes `null`. So staff make a page a draft again when they clear the date.
                 TEXT)
@@ -236,11 +279,14 @@ return Feature::make('pages-posts')
             ->docs('https://laravel.com/docs/controllers#resource-controllers', 'Laravel docs: Resource controllers')
             ->docs('https://laravel.com/docs/validation#rule-enum', 'Laravel docs: The enum rule')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/12', 'Laravel From Scratch, episode 12: Form Request Classes')
-            ->check(Check::route('admin.pages.index', 'admin.pages.store', 'admin.pages.update', 'admin.pages.destroy')),
+            ->check(Check::all(
+                Check::route('admin.pages.index', 'admin.pages.store', 'admin.pages.update', 'admin.pages.destroy'),
+                Check::fileContains('app/Http/Controllers/Admin/PageController.php', 'PageService'),
+            )),
 
         Step::make('Build the staff pages with the editor')
             ->explain(<<<'TEXT'
-                Create four views in `resources/views/admin/pages`: `index`, `create`, `edit` and `form`. Copy the category views and change what is different.
+                Create four views in `resources/views/admin/pages`: `index`, `create`, `edit` and `form`. Copy the program views and change what is different. Give every link `wire:navigate`, as the staff menu does.
 
                 The list shows the title, the type label, the status in a badge and the publish date. Staff then see at a glance which posts are drafts and which are scheduled.
 
@@ -277,7 +323,7 @@ return Feature::make('pages-posts')
 
         Step::make('Add the public routes')
             ->explain(<<<'TEXT'
-                Add three routes under the Explore heading in `routes/web.php`:
+                Add three public routes in `routes/web.php`, next to the `visit-us` route:
 
                 - `/news` to `NewsController@index`, named `news.index`.
                 - `/news/{page:slug}` to `NewsController@show`, named `news.show`.
@@ -328,7 +374,7 @@ return Feature::make('pages-posts')
                 TEXT)
             ->think('The news view uses `$posts->links()`. How does the link to page 2 know the current URL?')
             ->hint('`$post->published_at?->format(\'F j, Y\')` shows a date such as "November 2, 2026".')
-            ->hint('Add `[\'label\' => \'News\', \'route\' => \'news.index\', \'description\' => \'Stories and science from the centre.\']` to the Explore list.')
+            ->hint('Copy the Visit Us link in the Explore list, and change it to `news.index`, with the label "News" and a short description.')
             ->code(<<<'PHP'
                 @if ($page->body)
                     {{-- The SafeHtml cast cleaned this HTML when it was saved. --}}

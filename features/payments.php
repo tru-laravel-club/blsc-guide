@@ -11,18 +11,20 @@ return Feature::make('payments')
     ->level(3)
     ->needs(['accounts'])
     ->summary('Take card payments through Moneris Checkout, so card numbers never touch our server. The app talks to Moneris through a PaymentGateway interface, so BLSC can change the provider later. A Payment pays for one record, such as an order, and a signed link lets guests pay without an account.')
-    ->teaches(['Interfaces', 'The service container', 'Config files', 'HTTP client', 'Http::fake', 'Events', 'Polymorphic relationships', 'Policies', 'Signed URLs'])
+    ->teaches(['Interfaces', 'The service container', 'Service classes', 'Config files', 'HTTP client', 'Http::fake', 'Events', 'Conditional updates', 'Polymorphic relationships', 'Policies', 'Signed URLs'])
     ->test('PaymentsTest.php')
     ->intro(<<<'TEXT'
         Registrations, tickets, memberships and deposits all cost money. A family puts them in a cart and pays once for the whole order. The Cart and orders feature builds the cart and the `Order`. In this feature, you build the part under it: one `Payment` that pays for one record, and the code that talks to the card provider.
 
         A `Payment` does not know what it pays for. It has a polymorphic `payable` link, so it can point to an order today and to another kind of record later. The parent types the card number into a Moneris Checkout form. The card number goes from the browser to Moneris. It never touches the BLSC server, so BLSC does not have to store or protect card numbers.
 
-        The app never talks to Moneris directly. It talks to a `PaymentGateway` interface with two methods: `start()` and `confirm()`. `MonerisGateway` implements the interface for real payments. `FakeGateway` implements it for your machine and for the tests. A config value names the gateway, and the service container gives that gateway to the controller. If BLSC changes to a different provider, a contributor writes one new class and changes one line.
+        The app never talks to Moneris directly. It talks to a `PaymentGateway` interface with two methods: `start()` and `confirm()`. `MonerisGateway` implements the interface for real payments. `FakeGateway` implements it for your machine and for the tests. A config value names the gateway, and the service container gives that gateway to `PaymentService`. If BLSC changes to a different provider, a contributor writes one new class and changes one line.
 
         Guests buy tickets without an account, so a payment cannot always belong to a user. The payment page uses a signed link instead. Only the app can make the link, so nobody can guess the page of another payment. When a payment belongs to an account, a policy also checks that the right parent is logged in.
 
         One rule protects the money: the server, not the browser, decides that a payment passed. A user controls their browser and can send any request to the server. So when the browser says "done", the server asks Moneris for the receipt and checks the result and the amount. If both are correct, the server marks the payment as paid and sends a `PaymentSucceeded` event. Other features listen for that event.
+
+        Keep the rule of the app in mind: **controllers do HTTP, services do the work**. `PaymentService` has two methods. `start()` begins a checkout with the gateway. `complete()` asks the gateway for the result and saves it. The controller checks the signed link and the policy, calls the service, and returns a page or a redirect. `/guide/services` explains the rule.
         TEXT)
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/18', 'Laravel From Scratch, episode 18: Authorization Using Policies')
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/22', 'Laravel From Scratch, episode 22: How to Get Started Testing Your Code')
@@ -30,8 +32,10 @@ return Feature::make('payments')
     ->docs('https://laravel.com/docs/urls#signed-urls', 'Laravel docs: Signed URLs')
     ->docs('https://laravel.com/docs/http-client#faking-responses', 'Laravel docs: Faking HTTP responses')
     ->docs('https://developer.moneris.com/hosted-solutions/docs/setup-guide', 'Moneris docs: Checkout setup guide')
+    ->docs('/guide/services', 'BLSC guide: Controllers and services')
     ->reflect([
-        'Why does `complete()` ask the gateway to confirm the payment, and not trust the browser that posted the form?',
+        'Why does `PaymentService::complete()` ask the gateway to confirm the payment, and not trust the browser that posted the form?',
+        'Two requests complete the same payment at the same moment. Why does an `if` on the status not stop the second one? What does the conditional update do differently?',
         'A guest payment has no owner. What protects it? What can a person do if somebody forwards them the link?',
         'BLSC wants to use Stripe next year. Which files do you change, and which files stay the same?',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
@@ -140,7 +144,7 @@ return Feature::make('payments')
             ->explain(<<<'TEXT'
                 The tests make payments with the factory. By default, a payment belongs to a new user, so `User::factory()` makes one. A test that needs a guest payment says so: `Payment::factory()->create(['user_id' => null])`. The test expects `$25.00` on the page, so the factory uses `2500` cents.
 
-                Leave out `status`, `gateway`, `reference`, `return_url` and `paid_at`. A new payment is pending, and the gateway and the controller set the other columns later. Leave out `payable`, too. It is nullable, and the tests do not need it.
+                Leave out `status`, `gateway`, `reference`, `return_url` and `paid_at`. A new payment is pending, and the gateway and `PaymentService` set the other columns later. Leave out `payable`, too. It is nullable, and the tests do not need it.
                 TEXT)
             ->think('Why does the factory not set `status`?')
             ->tryIt('In `php artisan tinker`, run `App\Models\Payment::factory()->make()->amount()`. You see `$25.00`.')
@@ -202,7 +206,7 @@ return Feature::make('payments')
             ->explain(<<<'TEXT'
                 This step is the center of the design. An interface is a list of methods without code. A class that `implements` the interface must have each method, with the same parameters and return type.
 
-                Create `app/Payments/PaymentGateway.php`. The rest of the app uses only this interface, never Moneris directly. So the controller does not know which provider it talks to. That is why BLSC can change the provider later.
+                Create `app/Payments/PaymentGateway.php`. The rest of the app uses only this interface, never Moneris directly. So `PaymentService` does not know which provider it talks to. That is why BLSC can change the provider later.
 
                 Every provider does two jobs. It starts a checkout, and it tells you if the payment was approved. `start()` returns a normal response. Moneris returns a page with its checkout form. Stripe and Square would return `redirect()->away()` to their own page. Both are a Symfony `Response`, so one return type covers every provider.
                 TEXT)
@@ -233,21 +237,21 @@ return Feature::make('payments')
                 }
                 PHP)
             ->explain(<<<'TEXT'
-                You cannot pay Moneris each time that you run a test. So you write a second gateway that only pretends. It has the same two methods, so the controller cannot see a difference. This shows why the interface is useful. You use this gateway on your machine and in tests.
+                You cannot pay Moneris each time that you run a test. So you write a second gateway that only pretends. It has the same two methods, so `PaymentService` cannot see a difference. This shows why the interface is useful. You use this gateway on your machine and in tests.
 
                 Create `app/Payments/FakeGateway.php`. `start()` saves a random reference and returns `response()->view('payments.fake')`. `confirm()` returns `true` when the request has `fake_result` set to `approve`.
 
-                Create the view `resources/views/payments/fake.blade.php` with the `<x-layouts::site>` layout. It shows the description and `amount()`, an "Approve test payment" button and a "Decline test payment" button. Each button posts `fake_result=approve` or `fake_result=decline` to the `payments.complete` route. The route needs a signed link, so the `action` attribute of the form is `URL::signedRoute('payments.complete', $payment)`. You add the route in a later step.
+                Create the view `resources/views/payments/fake.blade.php` with the `<x-layouts::site>` layout. It shows the description and `amount()`, an "Approve test payment" button and a "Decline test payment" button. Each button posts `fake_result=approve` or `fake_result=decline` to the `payments.complete` route. The route needs a signed link, so the form posts to `URL::signedRoute('payments.complete', $payment)`. You add the route in a later step.
 
                 When the status is failed, show "The last payment did not go through. Try again." above the buttons. The test checks for this text.
                 TEXT)
-            ->think('The controller does not know which gateway it has. What must be the same in both gateways for that to work?')
+            ->think('`PaymentService` does not know which gateway it has. What must be the same in both gateways for that to work?')
             ->hint('Start with `class FakeGateway implements PaymentGateway`. PHP then tells you if a method is missing.')
             ->hint('`reference` is not fillable. Set it with `$payment->forceFill([\'reference\' => \'fake-\'.Str::random(12)])->save();`.')
             ->hint('Give both buttons `name="fake_result"` and a different `value`. The browser sends the value of the button that you click.')
             ->hint('`<april:alert variant="destructive">` with a `<slot:title>` shows a red message. Show it `@if ($payment->status === App\Enums\PaymentStatus::Failed)`.')
             ->tryIt(<<<'TEXT'
-                The page needs the route, so you open it in the controller step. Try `confirm()` now. In `php artisan tinker`, run this line:
+                The page needs the route, so you open it in the last steps. Try `confirm()` now. In `php artisan tinker`, run this line:
 
                 `request()->merge(['fake_result' => 'approve']); (new App\Payments\FakeGateway)->confirm(App\Models\Payment::factory()->make())`
 
@@ -329,7 +333,7 @@ return Feature::make('payments')
             ->explain(<<<'TEXT'
                 You have two gateways. Now the app must pick one. The service container makes objects for Laravel. A binding tells it what to make when code asks for `PaymentGateway`.
 
-                Put this in `register()` in `app/Providers/AppServiceProvider.php`. Controllers ask for `PaymentGateway`, and the container gives them the gateway that the config names. To add a provider, write one class and add one line here.
+                Put this in `register()` in `app/Providers/AppServiceProvider.php`. `PaymentService` asks for `PaymentGateway`, and the container gives it the gateway that the config names. To add a provider, write one class and add one line here.
 
                 The fake gateway refuses production. If the live site used it by mistake, every payment would pass without money. So the app throws an exception. An unknown name throws an exception, too, so a typo in `.env` fails at once.
                 TEXT)
@@ -366,6 +370,114 @@ return Feature::make('payments')
             ->docs('https://laravel.com/docs/events', 'Laravel docs: Events')
             ->docs('https://laravel.com/docs/events#defining-events', 'Laravel docs: Defining events')
             ->check(Check::classExists('App\Events\PaymentSucceeded')),
+
+        Step::make('Start a checkout in the payment service')
+            ->run('php artisan make:class Services/PaymentService')
+            ->explain(<<<'TEXT'
+                The parts are ready: the gateways, the binding and the event. Now one class uses them. Taking a payment changes data, so it goes in a service, not in the controller. `/guide/services` explains this rule.
+
+                Run the command below. It makes `app/Services/PaymentService.php`. The service needs a gateway. Ask for it in the constructor: `public function __construct(private PaymentGateway $gateway) {}`. When a controller asks for `PaymentService`, the container builds it and fills the constructor from your binding. So the service gets the gateway that the config names, and it never names Moneris.
+
+                Add the first method, `start(Payment $payment): Response`. It asks the gateway to start a checkout and returns the page of the gateway. The gateway saves its reference on the payment. Today `start()` is one line. When BLSC wants to log each checkout or limit the tries, the rule goes here, and every page that starts a payment gets it.
+                TEXT)
+            ->think('Why is the payment work not in the controller? Think of a staff page that takes a payment at the front desk, or a test that completes a payment with no browser.')
+            ->hint('Use `Symfony\Component\HttpFoundation\Response` as the return type, as in the interface.')
+            ->code(<<<'PHP'
+                class PaymentService
+                {
+                    public function __construct(private PaymentGateway $gateway) {}
+
+                    /**
+                     * Start a checkout. The gateway saves its reference on the payment and returns the checkout page.
+                     */
+                    public function start(Payment $payment): Response
+                    {
+                        return $this->gateway->start($payment);
+                    }
+                }
+                PHP)
+            ->tryIt('In `php artisan tinker`, run `app(App\Services\PaymentService::class)`. You see the service with a `gateway` of `App\Payments\FakeGateway`. The container built the service and gave it the gateway from your binding.')
+            ->commit('Start checkouts in a payment service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/container#automatic-injection', 'Laravel docs: Automatic injection')
+            ->check(Check::fileContains('app/Services/PaymentService.php', 'function start')),
+
+        Step::make('Complete a payment in the service')
+            ->explain(<<<'TEXT'
+                Add the second method, `complete(Payment $payment): void`. The payer finished the checkout, and the browser says "done". This method decides what really happened. It holds three rules:
+
+                1. A paid payment stays paid. If the status is already paid, stop. A payer can click twice or reload the page.
+                2. Ask the gateway. If `confirm()` is false, set the status to failed, and stop. The payer can try again.
+                3. If `confirm()` is true, set the status to paid, `gateway` to the name in the config, and `paid_at` to now. Then dispatch `PaymentSucceeded`.
+
+                Rule 1 has a trap. A payer double-clicks "Approve", so two requests arrive at the same moment. Each request loads the payment from the database, and both copies say "pending". Both ask the gateway, both save "paid", and both dispatch `PaymentSucceeded`. Then the order is fulfilled twice. An `if` that reads the status first and saves later cannot stop this. Between the read and the save, the other request can do the same.
+
+                So let the database decide, in one query. Change the status only where the row is not paid yet: `Payment::whereKey($payment->id)->where('status', '!=', PaymentStatus::Paid)->update([...])`. The database runs one update at a time on a row. The query returns the number of rows that it changed. The first request changes 1 row. The second request changes 0 rows, because the row is already paid. Dispatch the event only when the query changed 1 row. Use the same query for "failed", so a late decline never turns a paid payment back into a failed one.
+
+                Keep the `if` of rule 1 at the start, too. It is not the guard, but it saves a slow call to the gateway on a reload. After the query, call `$payment->refresh()`, so the model in memory has the new values.
+
+                The service never reads the request and never returns a page. The controller does that HTTP work. So a test, or a staff page later, can complete a payment in the same way.
+                TEXT)
+            ->think('A payer double-clicks "Approve", and two requests run at the same moment. Which line makes sure that only one of them sends `PaymentSucceeded`?')
+            ->hint('Write a small private method, such as `updateUnlessPaid(Payment $payment, array $values): bool`. It runs the conditional update, refreshes the payment, and returns `true` when the query changed one row. Both rule 2 and rule 3 call it.')
+            ->hint('Save `config(\'payments.gateway\')` in `gateway`. Then call `PaymentSucceeded::dispatch($payment)` only when `updateUnlessPaid()` returns `true`.')
+            ->hint('The update query skips `#[Fillable]`, because it does not fill a model. Your code chooses every value, so this is safe.')
+            ->code(<<<'PHP'
+                /**
+                 * Ask the gateway if the payment passed, and save the result.
+                 * A paid payment stays paid, so a second click, a reload or two requests at once announce it only once.
+                 */
+                public function complete(Payment $payment): void
+                {
+                    if ($payment->status === PaymentStatus::Paid) {
+                        return;
+                    }
+
+                    if (! $this->gateway->confirm($payment)) {
+                        $this->updateUnlessPaid($payment, ['status' => PaymentStatus::Failed]);
+
+                        return;
+                    }
+
+                    $paid = $this->updateUnlessPaid($payment, [
+                        'status' => PaymentStatus::Paid,
+                        'gateway' => config('payments.gateway'),
+                        'paid_at' => now(),
+                    ]);
+
+                    if ($paid) {
+                        PaymentSucceeded::dispatch($payment);
+                    }
+                }
+
+                /**
+                 * Change the payment in one query, only while it is not paid.
+                 * The database checks and changes the row in the same moment, so two requests cannot both win.
+                 *
+                 * @param  array<string, mixed>  $values
+                 */
+                private function updateUnlessPaid(Payment $payment, array $values): bool
+                {
+                    $changed = Payment::whereKey($payment->id)
+                        ->where('status', '!=', PaymentStatus::Paid)
+                        ->update($values);
+
+                    $payment->refresh();
+
+                    return $changed === 1;
+                }
+                PHP)
+            ->tryIt(<<<'TEXT'
+                In `php artisan tinker`, make a payment and the service: `$p = App\Models\Payment::factory()->create(); $s = app(App\Services\PaymentService::class);`
+
+                Then run `request()->merge(['fake_result' => 'decline']); $s->complete($p); $p->status`. You see `Failed`. Run it again with `'approve'`. You see `Paid`, and `$p->gateway` is `"fake"`.
+
+                Now act out the double-click. Make two copies of one new payment: `$q = App\Models\Payment::factory()->create(); $a = $q->fresh(); $b = $q->fresh();`. Run `$s->complete($a); $s->complete($b);` with `'approve'`. Then run `$b->status`. You see `Paid`: the second call changed 0 rows, and it did not announce the payment again.
+                TEXT)
+            ->commit('Complete payments in the payment service')
+            ->docs('https://laravel.com/docs/events#dispatching-events', 'Laravel docs: Dispatching events')
+            ->docs('https://laravel.com/docs/queries#update-statements', 'Laravel docs: Update statements')
+            ->check(Check::fileContains('app/Services/PaymentService.php', 'function complete')),
 
         Step::make('Protect each payment with a policy')
             ->run('php artisan make:policy PaymentPolicy --model=Payment')
@@ -410,6 +522,27 @@ return Feature::make('payments')
                     Route::get('/payments/{payment}', [PaymentController::class, 'show'])->name('payments.show');
                     Route::post('/payments/{payment}/complete', [PaymentController::class, 'complete'])->name('payments.complete');
                 });
+
+                // In PaymentController:
+                public function show(Payment $payment, PaymentService $payments): Response
+                {
+                    Gate::authorize('view', $payment);
+
+                    if ($payment->status === PaymentStatus::Paid) {
+                        return response()->view('payments.paid', ['payment' => $payment]);
+                    }
+
+                    return $payments->start($payment);
+                }
+
+                public function complete(Payment $payment, PaymentService $payments): RedirectResponse
+                {
+                    Gate::authorize('view', $payment);
+
+                    $payments->complete($payment);
+
+                    return redirect($payment->url());
+                }
                 PHP)
             ->explain(<<<'TEXT'
                 Now you connect all the parts. Run `php artisan make:controller PaymentController`.
@@ -418,18 +551,17 @@ return Feature::make('payments')
 
                 Add a `url()` method to `Payment` that returns `URL::signedRoute('payments.show', $this)`. Other features send the payer to `$payment->url()`, and the test uses it, too.
 
-                Type-hint `PaymentGateway` in both methods. The container uses your binding and gives the controller the gateway. The controller never names Moneris.
+                The controller does only HTTP work. Both methods check the policy, ask for `PaymentService` as a parameter, call it, and respond. The controller never names a gateway and never saves the payment.
 
-                `show()` returns `$gateway->start($payment)` when the payment is pending or failed. When it is paid, `show()` shows a "Payment received" page instead. If the payment has a `return_url`, the page has a "Continue" button to it.
+                `show()` shows a "Payment received" page, `payments/paid.blade.php`, when the payment is paid. Otherwise it returns `$payments->start($payment)`. If the payment has a `return_url`, the "Payment received" page has a "Continue" button to it. Do not give that button `wire:navigate`: the payment does not know where the address points, and it can be another site.
 
-                `complete()` calls `confirm()` only while the payment is not paid. A payer can click twice or reload the page. Without this check, the app would announce the same payment twice. On success, set the status, gateway and `paid_at`, then dispatch `PaymentSucceeded`. On failure, set the status to failed. Then redirect to `$payment->url()`.
+                `complete()` calls `$payments->complete($payment)` and then redirects to `$payment->url()`. The payment page then shows the new status.
                 TEXT)
-            ->think('A payer clicks the button twice. What stops the app from sending `PaymentSucceeded` twice?')
+            ->think('`complete()` in the controller has no `if`. Where did the rules about paid and failed payments go? Why is that better?')
             ->hint('Start both methods with `Gate::authorize(\'view\', $payment);`. The policy then decides, for guests and for users.')
-            ->hint('Write `public function show(Payment $payment, PaymentGateway $gateway)`. Route model binding fills `$payment`, and the container fills `$gateway`.')
-            ->hint('Use `forceFill([...])->save()`, because these columns are not fillable. Save `config(\'payments.gateway\')` in `gateway`. Then call `PaymentSucceeded::dispatch($payment)` and return `redirect($payment->url())`.')
+            ->hint('Write `public function show(Payment $payment, PaymentService $payments): Response`. Route model binding fills `$payment`, and the container fills `$payments`. Use the Symfony `Response` as the return type, because the gateway can return a page or a redirect.')
             ->tryIt(<<<'TEXT'
-                Run `php artisan route:list --name=payments`. You see your two routes with the `signed` middleware.
+                Run `php artisan route:list --name=payments -v`. The `-v` option lists the middleware. You see your two routes, each with `ValidateSignature`: that is the `signed` middleware.
 
                 In `php artisan tinker`, make a guest payment and print its link: `App\Models\Payment::factory()->create(['user_id' => null])->url()`. Open the link in your browser. You see the fake page with $25.00. Click "Decline test payment". You see "The last payment did not go through". Click "Approve test payment". You see "Payment received".
 
@@ -442,9 +574,13 @@ return Feature::make('payments')
             ->docs('https://laravel.com/docs/urls#validating-signed-route-requests', 'Laravel docs: Validating signed route requests')
             ->docs('https://laravel.com/docs/authorization#via-the-gate-facade', 'Laravel docs: Authorizing with the Gate facade')
             ->docs('https://laravel.com/docs/routing#route-model-binding', 'Laravel docs: Route model binding')
-            ->docs('https://laravel.com/docs/events#dispatching-events', 'Laravel docs: Dispatching events')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
-            ->check(Check::all(Check::route('payments.show', 'payments.complete'), Check::view('payments.paid'))),
+            ->check(Check::all(
+                Check::route('payments.show', 'payments.complete'),
+                Check::view('payments.paid'),
+                Check::fileContains('app/Http/Controllers/PaymentController.php', 'PaymentService'),
+            )),
 
         Step::make('Run the checks and try a real test payment')
             ->run('php artisan guide:verify payments')

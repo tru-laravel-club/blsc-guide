@@ -11,7 +11,7 @@ return Feature::make('registration-lists')
     ->level(2)
     ->needs(['registrations', 'submission-exports'])
     ->summary('Class lists, allergy lists and pickup lists for each session, made from the data.')
-    ->teaches(['Field roles', 'Blade includes', 'Print views', 'Streamed CSV downloads', 'Sharing a helper class', 'Sensitive data'])
+    ->teaches(['Field roles', 'Service classes', 'Blade includes', 'Print views', 'Streamed CSV downloads', 'Sharing a helper class', 'Sensitive data'])
     ->test('RegistrationListsTest.php')
     ->intro(<<<'TEXT'
         On the first day of a camp, the instructor needs one sheet of paper: the children in the room, their allergies, the emergency contact, and the people who may pick each child up. Today that information is in the app, but it is spread over many submissions. In this feature, staff open one list for each session, print it, or download it as a CSV.
@@ -21,6 +21,8 @@ return Feature::make('registration-lists')
         So the list asks for a role. The Forms and fields feature gave the important fields a `FieldRole`, such as `Allergies` or `EmergencyPhone`. Each form version keeps a copy of its fields, with their roles. `Submission::answerForRole()` finds the field with the role in the version that the parent answered. The list never names a key or a label.
 
         Where do the answers come from: the submission of the registration, or the saved profile of the child? This feature uses the submission. It is what the parent told the centre for this session, and the parent confirmed sensitive answers when they registered. The profile can change later, or the parent can delete an answer. A list from the submissions shows what the centre was told, and every row has an answer from the same moment.
+
+        The page, the print view and the CSV show the same rows. So one service, `RegistrationListService`, builds the rows once with `rows($session)`, and the three controller methods only send them out in their own format (see `/guide/services`).
 
         The list holds health and contact details of children. The form export leaves sensitive fields out, because anybody on the staff can download it for any purpose. This list has one purpose: the safety of the children on the day. So it shows four roles and nothing more. It does not show the school, the medical notes or the photo consent.
         TEXT)
@@ -88,9 +90,9 @@ return Feature::make('registration-lists')
 
         Step::make('Share the CSV safety rule')
             ->explain(<<<'TEXT'
-                Open `app/Http/Controllers/Admin/SubmissionExportController.php`. Its private `cell()` method stops a spreadsheet formula: a cell that starts with `=`, `+`, `-` or `@` gets a `'` in front. A parent could type `=HYPERLINK(...)` as an allergy. Your CSV needs the same protection.
+                Open `app/Services/SubmissionExportService.php`. Its private `cell()` method stops a spreadsheet formula: a cell that starts with `=`, `+`, `-` or `@` gets a `'` in front. A parent could type `=HYPERLINK(...)` as an allergy. Your CSV needs the same protection.
 
-                Do not copy the method. Move it into a small class, `app/Support/Csv.php`, as a static method `Csv::cell(string $value): string`. Then change the export controller to call `Csv::cell()`, and delete its private method.
+                Do not copy the method. Move it into a small class, `app/Support/Csv.php`, as a static method `Csv::cell(string $value): string`. It keeps no state and changes no data: it only turns one string into another, as `FormRules::for()` does. Then change `SubmissionExportService` to call `Csv::cell()`, and delete its private method.
 
                 Run `SubmissionExportsTest`. It must still pass.
                 TEXT)
@@ -115,8 +117,68 @@ return Feature::make('registration-lists')
             ->docs('https://owasp.org/www-community/attacks/CSV_Injection', 'OWASP: CSV injection')
             ->check(Check::all(
                 Check::fileExists('app/Support/Csv.php'),
-                Check::fileContains('app/Http/Controllers/Admin/SubmissionExportController.php', 'Csv::cell'),
+                Check::fileContains('app/Services/SubmissionExportService.php', 'Csv::cell'),
             )),
+
+        Step::make('Build the rows in a service')
+            ->run('php artisan make:class Services/RegistrationListService')
+            ->explain(<<<'TEXT'
+                The page, the print view and the CSV need the same rows. Build them once, in `RegistrationListService::rows(ProgramSession $session): array`. Each row is a small array with the name of the child, the age on the first day of the session, the name and the email of the parent, and one answer for each role.
+
+                Which registrations?
+
+                - only `Confirmed` registrations. A pending registration is not paid, and a cancelled child does not come.
+                - with `child.user` and `submission.version`, so the list does not run a query for each row.
+                - sorted by the name of the child, as a class list is.
+
+                Put the roles in a public constant on the service: `ROLES = [FieldRole::Allergies, FieldRole::EmergencyName, FieldRole::EmergencyPhone, FieldRole::PickupPeople]`. The views and the CSV read it for the column headers. To add a column next year, staff give a field a role, and a developer adds one case to this list.
+
+                The service changes no data. It is still the right home: the rows are the work of this feature, and three front doors share them. A controller that built them would have to share a private method with nobody else.
+                TEXT)
+            ->think('Why does the list not include `MedicalNotes`, even though the role exists? Who decides what goes on a sheet of paper in a classroom?')
+            ->hint('`->get()->sortBy(\'child.name\')->values()` sorts the loaded registrations by the name of the child and numbers them again from 0.')
+            ->hint('`array_map(fn (FieldRole $role) => $registration->submission->answerTextForRole($role), self::ROLES)` gives one answer for each role, in the order of the columns.')
+            ->hint('End with `->all()` and return a plain `array`. PHPStan then accepts the rows. With a `Collection` return type, it refuses the rows, because their type is a little more exact than the `@return` line.')
+            ->code(<<<'PHP'
+                class RegistrationListService
+                {
+                    /**
+                     * The roles that the list shows. The list asks for roles, never for field keys or labels.
+                     *
+                     * @var list<FieldRole>
+                     */
+                    public const ROLES = [FieldRole::Allergies, FieldRole::EmergencyName, FieldRole::EmergencyPhone, FieldRole::PickupPeople];
+
+                    /**
+                     * One row for each confirmed child of the session, sorted by name.
+                     *
+                     * @return array<int, array{child: string, age: int, parent: string, email: string, answers: list<string>}>
+                     */
+                    public function rows(ProgramSession $session): array
+                    {
+                        return $session->registrations()
+                            ->where('status', RegistrationStatus::Confirmed)
+                            ->with(['child.user', 'submission.version'])
+                            ->get()
+                            ->sortBy('child.name')
+                            ->values()
+                            ->map(fn (Registration $registration) => [
+                                'child' => $registration->child->name,
+                                'age' => $registration->child->ageOn($session->starts_on),
+                                'parent' => $registration->child->user->name,
+                                'email' => $registration->child->user->email,
+                                'answers' => array_map(fn (FieldRole $role) => $registration->submission->answerTextForRole($role), self::ROLES),
+                            ])
+                            ->all();
+                    }
+                }
+                PHP)
+            ->tryIt('Register a child for a club and pay. In `php artisan tinker`, run `app(App\Services\RegistrationListService::class)->rows(App\Models\Registration::where(\'status\', \'confirmed\')->first()->session)`. You see one row with your child and the answers.')
+            ->commit('Build the registration list rows in a service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/eloquent-relationships#nested-eager-loading', 'Laravel docs: Nested eager loading')
+            ->docs('https://laravel.com/docs/collections#method-map', 'Laravel docs: The map method')
+            ->check(Check::fileContains('app/Services/RegistrationListService.php', 'function rows')),
 
         Step::make('Add the routes and the controller')
             ->run('php artisan make:controller Admin/RegistrationListController')
@@ -129,50 +191,36 @@ return Feature::make('registration-lists')
 
                 The group adds the `admin.` prefix to each name and checks that the user is staff.
 
-                The three methods need the same data. Write it once, in a private method `list(ProgramSession $session): array`. It returns the session with its program, the list of roles, and the registrations:
-
-                - only `Confirmed` registrations. A pending registration is not paid, and a cancelled child does not come.
-                - with `child.user` and `submission.version`, so the page does not run a query for each row.
-                - sorted by the name of the child, as a class list is.
-
-                Put the roles in a constant on the controller: `Allergies`, `EmergencyName`, `EmergencyPhone` and `PickupPeople`. The page, the print view and the CSV all read it. To add a column next year, staff give a field a role, and a developer adds one case to this list.
+                Each method asks for `RegistrationListService $list` and calls `$list->rows($session)`. `index()` and `print()` pass three things to their views: the session with its program, the roles from `RegistrationListService::ROLES`, and the rows. You write `export()` in a later step.
                 TEXT)
-            ->think('Why does the list not include `MedicalNotes`, even though the role exists? Who decides what goes on a sheet of paper in a classroom?')
-            ->hint('`->get()->sortBy(\'child.name\')->values()` sorts the loaded registrations by the name of the child and numbers them again from 0.')
+            ->think('The controller does not filter the registrations or read an answer. What is left for it to do?')
+            ->hint('`$session->load(\'program\')` loads the program once, for the header of the page.')
             ->code(<<<'PHP'
-                /**
-                 * The roles that the list shows. The list asks for roles, never for field keys or labels.
-                 *
-                 * @var list<FieldRole>
-                 */
-                private const ROLES = [FieldRole::Allergies, FieldRole::EmergencyName, FieldRole::EmergencyPhone, FieldRole::PickupPeople];
-
-                private function list(ProgramSession $session): array
+                public function index(ProgramSession $session, RegistrationListService $list): View
                 {
-                    return [
+                    return view('admin.registration-lists.index', [
                         'session' => $session->load('program'),
-                        'roles' => self::ROLES,
-                        'registrations' => $session->registrations()
-                            ->where('status', RegistrationStatus::Confirmed)
-                            ->with(['child.user', 'submission.version'])
-                            ->get()
-                            ->sortBy('child.name')
-                            ->values(),
-                    ];
+                        'roles' => RegistrationListService::ROLES,
+                        'rows' => $list->rows($session),
+                    ]);
                 }
                 PHP)
             ->tryIt('Run `php artisan route:list --name=sessions.registrations -v`. You see three routes. Under each one, the list of middleware has `Authorize:access-admin`.')
             ->commit('Add the registration list routes')
             ->docs('https://laravel.com/docs/routing#route-group-middleware', 'Laravel docs: Route group middleware')
-            ->docs('https://laravel.com/docs/eloquent-relationships#nested-eager-loading', 'Laravel docs: Nested eager loading')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
-            ->check(Check::route('admin.sessions.registrations.index', 'admin.sessions.registrations.print', 'admin.sessions.registrations.export')),
+            ->check(Check::all(
+                Check::route('admin.sessions.registrations.index', 'admin.sessions.registrations.print', 'admin.sessions.registrations.export'),
+                Check::fileContains('app/Http/Controllers/Admin/RegistrationListController.php', 'RegistrationListService'),
+            )),
 
         Step::make('Build the list page and the print view')
             ->explain(<<<'TEXT'
                 The page and the print view show the same table. Write the table once, in `resources/views/admin/registration-lists/table.blade.php`, and include it in both views with `@include`.
 
-                The table has one row for each child: the name, the age on the first day of the session, the parent, and one column for each role. The column header is `$role->label()`, never the label of a field. Show "—" for an empty answer, so staff see that the parent left it empty. Use `white-space: pre-line` on the answers, so a list of pickup people keeps its lines.
+                The table has one row for each child: the name, the age on the first day of the session, the parent, and one column for each role. The column header is `$role->label()`, never the label of a field. The Forms and fields feature gave each role its label, such as "People who can pick up". The answers are already in `$row['answers']`, in the same order as `$roles`.
+
+                Show "—" for an empty answer, so staff see that the parent left it empty. Use `white-space: pre-line` on the answers, so a list of pickup people keeps its lines.
 
                 `index.blade.php` uses the staff layout. It shows the dates, the number of confirmed children, and two buttons: **Print** (opens the print view in a new tab) and **Download CSV**. Add one sentence that asks staff to shred the paper after the session.
 
@@ -181,13 +229,13 @@ return Feature::make('registration-lists')
             ->think('Why is the print view a separate page, and not the staff page with a print style sheet?')
             ->hint('`@include(\'admin.registration-lists.table\')` gives the included view all the variables of the parent view.')
             ->code(<<<'PHP'
-                @foreach ($registrations as $registration)
+                @foreach ($rows as $row)
                     <tr>
-                        <td>{{ $registration->child->name }}</td>
-                        <td>{{ $registration->child->ageOn($session->starts_on) }}</td>
-                        <td>{{ $registration->child->user->name }}</td>
-                        @foreach ($roles as $role)
-                            <td class="answer">{{ $registration->submission->answerTextForRole($role) ?: '—' }}</td>
+                        <td>{{ $row['child'] }}</td>
+                        <td>{{ $row['age'] }}</td>
+                        <td>{{ $row['parent'] }}</td>
+                        @foreach ($row['answers'] as $answer)
+                            <td class="answer">{{ $answer ?: '—' }}</td>
                         @endforeach
                     </tr>
                 @endforeach
@@ -203,36 +251,35 @@ return Feature::make('registration-lists')
 
         Step::make('Download the list as a CSV')
             ->explain(<<<'TEXT'
-                Copy the pattern of `SubmissionExportController`: `response()->streamDownload()` writes the rows one at a time with `fputcsv()`.
+                Write `export()`. Copy the pattern of `SubmissionExportController`: `response()->streamDownload()` writes the rows one at a time with `fputcsv()`. Pass `escape: ''` to `fputcsv()`, as that controller does. PHP 8.4 warns when you leave it out.
 
-                The first row is the header: "Child", "Age on the first day", "Parent", "Parent email", and the label of each role. Then one row for each registration. Pass every cell through `Csv::cell()`.
+                The first row is the header: "Child", "Age on the first day", "Parent", "Parent email", and the label of each role. Then one line for each row from `$list->rows($session)`. Pass every cell through `Csv::cell()`.
 
                 Add one more header: `Cache-Control: no-store, private`. It asks the browser and any proxy not to keep a copy of the file. The list holds children's health details, so it must not stay in a cache.
                 TEXT)
             ->think('The CSV has a "Parent email" column, but the page does not. Who uses the CSV, and for what?')
             ->hint('The third argument of `streamDownload()` is the file name, and the fourth is an array of headers.')
             ->code(<<<'PHP'
-                return response()->streamDownload(function () use ($list) {
-                    $file = fopen('php://output', 'w');
+                public function export(ProgramSession $session, RegistrationListService $list): StreamedResponse
+                {
+                    $rows = $list->rows($session);
 
-                    if ($file === false) {
-                        return;
-                    }
+                    return response()->streamDownload(function () use ($rows) {
+                        $file = fopen('php://output', 'w');
 
-                    fputcsv($file, ['Child', 'Age on the first day', 'Parent', 'Parent email', ...array_map(fn (FieldRole $role) => $role->label(), $list['roles'])]);
+                        if ($file === false) {
+                            return;
+                        }
 
-                    foreach ($list['registrations'] as $registration) {
-                        fputcsv($file, array_map(Csv::cell(...), [
-                            $registration->child->name,
-                            (string) $registration->child->ageOn($list['session']->starts_on),
-                            $registration->child->user->name,
-                            $registration->child->user->email,
-                            ...array_map(fn (FieldRole $role) => $registration->submission->answerTextForRole($role), $list['roles']),
-                        ]));
-                    }
+                        fputcsv($file, ['Child', 'Age on the first day', 'Parent', 'Parent email', ...array_map(fn (FieldRole $role) => $role->label(), RegistrationListService::ROLES)], escape: '');
 
-                    fclose($file);
-                }, "registrations-{$session->id}.csv", ['Content-Type' => 'text/csv', 'Cache-Control' => 'no-store, private']);
+                        foreach ($rows as $row) {
+                            fputcsv($file, array_map(Csv::cell(...), [$row['child'], (string) $row['age'], $row['parent'], $row['email'], ...$row['answers']]), escape: '');
+                        }
+
+                        fclose($file);
+                    }, "registrations-{$session->id}.csv", ['Content-Type' => 'text/csv', 'Cache-Control' => 'no-store, private']);
+                }
                 PHP)
             ->tryIt('On the list page, click Download CSV. Open the file in a spreadsheet. You see one column for each role, and one row for your child.')
             ->commit('Download registration lists as CSV')
@@ -246,7 +293,7 @@ return Feature::make('registration-lists')
                 Change the `colspan` of the empty row too, so it covers the new column.
                 TEXT)
             ->think('A program with the `apply` mode also has sessions. Should its rows show the link? What does the list show for it?')
-            ->hint('`route(\'admin.sessions.registrations.index\', $session)` builds the link.')
+            ->hint('`route(\'admin.sessions.registrations.index\', $session)` builds the link. Add `wire:navigate`, as on every link to a page of the site.')
             ->tryIt('As staff, open Programs and a club. Each session has a List link. Click it, and you see the list of that session.')
             ->commit('Link sessions to their registration lists')
             ->check(Check::fileContains('resources/views/admin/programs/edit.blade.php', 'admin.sessions.registrations.index')),
@@ -256,11 +303,11 @@ return Feature::make('registration-lists')
             ->explain(<<<'TEXT'
                 Run the acceptance test with `guide:verify`. Then run `composer ci:check`. It runs Pint, PHPStan and every test, as GitHub does on your pull request.
 
-                You changed `Submission` and `SubmissionExportController`. `SubmissionsTest` and `SubmissionExportsTest` prove that they still work.
+                You changed `Submission` and `SubmissionExportService`. `SubmissionsTest` and `SubmissionExportsTest` prove that they still work.
 
                 In your pull request, add a screenshot of the print view with test data, never with real children.
                 TEXT)
-            ->think('PHPStan says that the `list()` method returns an array with no value type. How do you describe its three keys in the docblock?')
+            ->think('PHPStan reads the `@return` line of `rows()`. Which mistake in `export()` can it find because of that line? Which mistakes in the Blade views can it not find?')
             ->tryIt('Run `composer ci:check`. Pint, PHPStan and all the tests pass.')
             ->commit('Fix the checks for registration lists')
             ->check(Check::testPassed('RegistrationListsTest')),

@@ -11,7 +11,7 @@ return Feature::make('submission-exports')
     ->level(2)
     ->needs(['submissions'])
     ->summary('Staff export submissions to CSV and get an email for each new one. Sensitive fields stay out of exports.')
-    ->teaches(['Streamed downloads', 'CSV files', 'Lazy collections', 'Queued notifications', 'On-demand notifications', 'Notification::fake'])
+    ->teaches(['Service classes', 'Streamed downloads', 'CSV files', 'Lazy collections', 'Queued notifications', 'On-demand notifications', 'Notification::fake'])
     ->test('SubmissionExportsTest.php')
     ->intro(<<<'TEXT'
         Staff read submissions one at a time on the staff pages. But they also plan with them: how many children need a T-shirt, which schools the children come from. For that, they want a spreadsheet. And they want to know when a new submission arrives, without opening the site every hour.
@@ -19,6 +19,8 @@ return Feature::make('submission-exports')
         In this feature, you build both. A "Download CSV" button on the submissions page sends a CSV file. A queued email goes to the form's `notify_email` for each new submission.
 
         The export has one hard question: which columns? A form changes over time. Version 1 asked about shoe sizes. Version 2 removed that question and added "Can your child swim?". A spreadsheet of the whole season must show both. So the columns are **every key from every version**. Each column uses the **newest label** for its key, because staff read the export today. A submission that did not see a question gets an empty cell.
+
+        Remember the rule: **controllers do HTTP, services do the work**. The export changes no data, but it holds rules of the centre: which columns, which labels, which fields stay out. So a new service, `SubmissionExportService`, builds the columns and the rows. The controller only streams them to the browser. The notice to staff goes where the submission is saved: in `FormSubmissionService::submit()`.
 
         Two rules protect the children. Sensitive fields, such as allergies and medical notes, never go into the export. A CSV file gets copied, emailed and forgotten on laptops. Staff who need allergies read them on the site, where a login protects them. And the email says only that a submission arrived, with a link. It does not hold the answers, for the same reason.
         TEXT)
@@ -48,29 +50,30 @@ return Feature::make('submission-exports')
             ->check(Check::fileExists('tests/Feature/SubmissionExportsTest.php')),
 
         Step::make('Find the columns from every version')
+            ->run('php artisan make:class Services/SubmissionExportService')
             ->explain(<<<'TEXT'
-                Add `exportColumns(): array` to `Form`. It returns the field definitions for the columns, keyed by field key.
+                Run the command below. It makes `app/Services/SubmissionExportService.php`. Add `columns(Form $form): array`. It returns the field definitions for the columns, keyed by field key.
 
                 Go through the versions from the newest to the oldest. For each field, keep the first definition that you see for its key. Because you start with the newest version, that is the newest label. A key that is only in an old version comes later, with the label from the last version that asked it.
 
                 Then leave out every key that was sensitive in any version. If staff marked a field as sensitive only last month, its old answers are still sensitive.
                 TEXT)
-            ->think('A field was not sensitive in version 1 and is sensitive in version 2. Why leave it out of the whole export, and not only for version 2?')
+            ->think('Why put the columns in a service, and not in the controller that sends the file? Who else could need the same columns next year?')
             ->hint('`$columns[$field[\'key\']] ??= $field;` sets the value only when the key is not there yet.')
             ->hint('`array_diff_key($columns, $sensitive)` removes the keys that are in `$sensitive`.')
             ->code(<<<'PHP'
                 /**
                  * The columns of the export: every key from every version, with its newest definition.
-                 * Sensitive fields are left out.
+                 * A key that was sensitive in any version is left out.
                  *
                  * @return array<string, Definition>
                  */
-                public function exportColumns(): array
+                public function columns(Form $form): array
                 {
                     $columns = [];
                     $sensitive = [];
 
-                    foreach ($this->versions()->get()->reverse() as $version) {
+                    foreach ($form->versions()->get()->reverse() as $version) {
                         foreach ($version->fields as $field) {
                             $columns[$field['key']] ??= $field;
 
@@ -83,51 +86,46 @@ return Feature::make('submission-exports')
                     return array_diff_key($columns, $sensitive);
                 }
                 PHP)
-            ->tryIt('In tinker, run `array_keys(App\Models\Form::firstWhere(\'slug\', \'contact\')->exportColumns())`. You see the keys of the contact form.')
+            ->tryIt('In tinker, run `array_keys(app(App\Services\SubmissionExportService::class)->columns(App\Models\Form::firstWhere(\'slug\', \'contact\')))`. You see the keys of the contact form.')
             ->commit('Find the export columns of a form')
-            ->check(Check::fileContains('app/Models/Form.php', 'function exportColumns')),
+            ->docs('https://laravel.com/docs/container#zero-configuration-resolution', 'Laravel docs: Zero configuration resolution')
+            ->check(Check::fileContains('app/Services/SubmissionExportService.php', 'function columns')),
 
-        Step::make('Stream the CSV file')
+        Step::make('Build the rows and stream the CSV file')
             ->run('php artisan make:controller Admin/SubmissionExportController --invokable')
             ->explain(<<<'TEXT'
-                Add `Route::get('forms/{form}/export', Admin\SubmissionExportController::class)->name('forms.export')` in the staff group. The controller has one job, so it is **invokable**: one `__invoke()` method.
+                A busy form can have thousands of submissions. Do not build the whole file in memory.
 
-                A busy form can have thousands of submissions. Do not build the whole file in memory. `response()->streamDownload()` takes a function that writes to `php://output`, and Laravel sends each line to the browser as it is written. Read the submissions with `lazy()`, which loads them in small groups.
+                **The rows.** Add `rows(Form $form): LazyCollection` to the service. A lazy collection runs a function that `yield`s one row at a time, and the next row waits until someone asks for it. Yield the header first: "Submitted at", "Version", and the label of each column. Then one row for each submission: the date, the version number, and `AnswerText::for()` for each column. Read the submissions with `lazy()`, which loads them from the database in small groups. A question that the version did not ask gives `null`, and `AnswerText` turns that into an empty cell.
 
-                Write the header row first: "Submitted at", "Version", and the label of each column. Then one row for each submission: the date, the version number, and `AnswerText::for()` for each column. A question that the version did not ask gives `null`, and `AnswerText` turns that into an empty cell.
+                One more danger. A spreadsheet runs a cell that starts with `=`, `+`, `-` or `@` as a formula. A visitor can type `=HYPERLINK(...)` into a public form. Put a `'` in front of such a value, so the spreadsheet shows it as text. Write that in a private `cell()` method of the service, and pass each answer through it.
 
-                One more danger. A spreadsheet runs a cell that starts with `=`, `+`, `-` or `@` as a formula. A visitor can type `=HYPERLINK(...)` into a public form. Put a `'` in front of such a value, so the spreadsheet shows it as text.
+                **The file.** Add `Route::get('forms/{form}/export', Admin\SubmissionExportController::class)->name('forms.export')` in the staff group. The controller has one job, so it is **invokable**: one `__invoke()` method. It asks for the service, and returns `response()->streamDownload()`. That takes a function that writes to `php://output`, and Laravel sends each line to the browser as it is written. The function writes each row with `fputcsv()`. Pass `escape: ''`: PHP 8.4 and later warn when you leave the escape character out, and an empty one gives a standard CSV file. The controller knows nothing about columns or sensitive fields.
                 TEXT)
             ->think('A parent types "-" as an answer, or a phone number starts with "+1". The export shows `\'-` and `\'+1`. Is that a problem for staff? Is it worth it?')
-            ->hint('`fputcsv($file, [...])` writes one row, with quotes where a value needs them.')
+            ->hint('`LazyCollection::make(function () { yield [...]; })` makes a lazy collection from a generator function.')
             ->hint('`lazy()` needs a sort order. Through `hasManyThrough`, name the table: `orderBy(\'submissions.id\')`.')
+            ->hint('`fputcsv($file, $row, escape: \'\')` writes one row, with quotes where a value needs them.')
             ->code(<<<'PHP'
-                public function __invoke(Form $form): StreamedResponse
+                // app/Services/SubmissionExportService.php
+                public function rows(Form $form): LazyCollection
                 {
-                    $columns = $form->exportColumns();
+                    $columns = array_values($this->columns($form));
 
-                    return response()->streamDownload(function () use ($form, $columns) {
-                        $file = fopen('php://output', 'w');
-
-                        if ($file === false) {
-                            return;
-                        }
-
-                        fputcsv($file, ['Submitted at', 'Version', ...array_column($columns, 'label')]);
+                    return LazyCollection::make(function () use ($form, $columns) {
+                        yield ['Submitted at', 'Version', ...array_column($columns, 'label')];
 
                         foreach ($form->submissions()->with('version')->orderBy('submissions.id')->lazy() as $submission) {
-                            fputcsv($file, [
+                            yield [
                                 $submission->submitted_at->toDateTimeString(),
                                 $submission->version->number,
                                 ...array_map(
                                     fn (array $field) => $this->cell(AnswerText::for($field, $submission->answer($field['key']))),
-                                    array_values($columns),
+                                    $columns,
                                 ),
-                            ]);
+                            ];
                         }
-
-                        fclose($file);
-                    }, "{$form->slug}-submissions.csv", ['Content-Type' => 'text/csv']);
+                    });
                 }
 
                 /**
@@ -137,17 +135,39 @@ return Feature::make('submission-exports')
                 {
                     return in_array(substr($value, 0, 1), ['=', '+', '-', '@'], true) ? "'{$value}" : $value;
                 }
+
+                // app/Http/Controllers/Admin/SubmissionExportController.php
+                public function __invoke(Form $form, SubmissionExportService $export): StreamedResponse
+                {
+                    return response()->streamDownload(function () use ($form, $export) {
+                        $file = fopen('php://output', 'w');
+
+                        if ($file === false) {
+                            return;
+                        }
+
+                        foreach ($export->rows($form) as $row) {
+                            fputcsv($file, $row, escape: '');
+                        }
+
+                        fclose($file);
+                    }, "{$form->slug}-submissions.csv", ['Content-Type' => 'text/csv']);
+                }
                 PHP)
             ->tryIt('Log in as staff, open Forms, and open the submissions of the contact form. You add the button in the next step, so open http://localhost:8000/admin/forms/1/export directly. Your browser downloads `contact-submissions.csv`. Open it in a spreadsheet.')
             ->commit('Export submissions as CSV')
+            ->docs('https://laravel.com/docs/collections#creating-lazy-collections', 'Laravel docs: Creating lazy collections')
+            ->docs('https://laravel.com/docs/eloquent#chunking-using-lazy-collections', 'Laravel docs: Lazy collections in Eloquent')
             ->docs('https://laravel.com/docs/responses#streamed-downloads', 'Laravel docs: Streamed downloads')
-            ->docs('https://laravel.com/docs/eloquent#chunking-using-lazy-collections', 'Laravel docs: Lazy collections')
             ->docs('https://laravel.com/docs/controllers#single-action-controllers', 'Laravel docs: Invokable controllers')
-            ->check(Check::route('admin.forms.export')),
+            ->check(Check::all(
+                Check::route('admin.forms.export'),
+                Check::fileContains('app/Services/SubmissionExportService.php', 'function rows'),
+            )),
 
         Step::make('Add the download button')
             ->explain(<<<'TEXT'
-                On `resources/views/admin/submissions/index.blade.php`, add a "Download CSV" button next to "All forms". It links to `admin.forms.export` for the form.
+                At the top of `resources/views/admin/submissions/index.blade.php`, add a "Download CSV" button. It links to `admin.forms.export` for the form. Do not give this link `wire:navigate`: it gives a file, not a page, so the browser must load it in the normal way.
 
                 Staff will look for allergies in the file and not find them. Add one sentence under the button that says why: sensitive answers are only on the site.
                 TEXT)
@@ -168,7 +188,7 @@ return Feature::make('submission-exports')
 
                 Who gets it? The address is not a user in the database. It is the `notify_email` of the form, such as `camps@blscs.org`. An **on-demand notification** sends to an address without a model: `Notification::route('mail', $address)->notify(...)`.
 
-                In the public `FormController::store()`, keep the new submission in a variable. If the form has a `notify_email`, send the notification.
+                Where does the code go? Not in a controller. A submission is saved in one place, `FormSubmissionService::submit()`, so the notice goes there too. After the service creates the submission, it sends the notification if the form has a `notify_email`. Every form that people send through the service now tells staff, with no change to any controller.
                 TEXT)
             ->think('The mail server is down for ten minutes. What happens to a queued email? What would happen without the queue?')
             ->hint('The test reads the mail with `$notification->toMail($notifiable)->render()`. Use `route(\'admin.submissions.show\', $this->submission)` for the button.')
@@ -197,9 +217,9 @@ return Feature::make('submission-exports')
                     }
                 }
 
-                // app/Http/Controllers/FormController.php, in store()
-                if ($form->notify_email) {
-                    Notification::route('mail', $form->notify_email)->notify(new SubmissionReceived($submission));
+                // app/Services/FormSubmissionService.php, in submit(), before return
+                if ($version->form->notify_email) {
+                    Notification::route('mail', $version->form->notify_email)->notify(new SubmissionReceived($submission));
                 }
                 PHP)
             ->tryIt(<<<'TEXT'
@@ -212,7 +232,10 @@ return Feature::make('submission-exports')
             ->docs('https://laravel.com/docs/notifications#on-demand-notifications', 'Laravel docs: On-demand notifications')
             ->docs('https://laravel.com/docs/notifications#formatting-mail-messages', 'Laravel docs: Formatting mail messages')
             ->docs('https://laravel.com/docs/queues#running-the-queue-worker', 'Laravel docs: Running the queue worker')
-            ->check(Check::classExists('App\Notifications\SubmissionReceived')),
+            ->check(Check::all(
+                Check::classExists('App\Notifications\SubmissionReceived'),
+                Check::fileContains('app/Services/FormSubmissionService.php', 'SubmissionReceived'),
+            )),
 
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify submission-exports')

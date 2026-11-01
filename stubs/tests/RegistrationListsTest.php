@@ -11,6 +11,7 @@ use App\Models\ProgramSession;
 use App\Models\Registration;
 use App\Models\Submission;
 use App\Models\User;
+use App\Services\FormService;
 
 /*
 | Acceptance test for the "Registration lists" feature.
@@ -36,7 +37,7 @@ beforeEach(function () {
         $this->form->fields()->attach($field, ['position' => $position, 'required' => false]);
     }
 
-    $this->form->publish();
+    app(FormService::class)->publish($this->form);
 
     $program = Program::factory()->create(['name' => 'Junior Robotics Club', 'signup_mode' => 'register', 'form_id' => $this->form->id]);
     $this->session = ProgramSession::factory()->for($program)->create(['label' => 'Winter 2026']);
@@ -131,7 +132,7 @@ test('the list keeps every answer after staff rename and replace fields', functi
     $this->fields['allergies']->update(['role' => null, 'archived_at' => now()]);
     $foodAllergies = Field::factory()->create(['key' => 'food_allergies', 'label' => 'Food allergies', 'scope' => FieldScope::Child, 'role' => FieldRole::Allergies]);
     $this->form->fields()->attach($foodAllergies, ['position' => 9, 'required' => false]);
-    $this->form->publish();
+    app(FormService::class)->publish($this->form);
 
     listedRegistration($this->session, 'Ada', ['food_allergies' => 'Eggs', 'emergency_phone' => '250-555-0199']);
 
@@ -160,7 +161,7 @@ test('staff download the list as a CSV with one column for each role', function 
         ->assertOk()
         ->assertDownload();
 
-    $lines = array_map(str_getcsv(...), array_filter(explode("\n", trim($response->streamedContent()))));
+    $lines = array_map(fn (string $line) => str_getcsv($line, escape: ''), array_filter(explode("\n", trim($response->streamedContent()))));
 
     expect($lines)->toHaveCount(2)
         ->and($lines[0])->toContain('Child', 'Allergies', 'Emergency contact name', 'Emergency contact phone', 'People who can pick up')

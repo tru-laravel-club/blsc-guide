@@ -1,11 +1,12 @@
 <?php
 
-use App\Cart;
+use App\Contracts\Fulfiller;
 use App\Contracts\Purchasable;
 use App\Events\PaymentSucceeded;
 use App\Mail\OrderConfirmation;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\CartService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
@@ -36,14 +37,27 @@ class EmailTestItem extends Model implements Purchasable
         return 1000;
     }
 
-    public function fulfil(): void
-    {
-        $this->update(['code' => strtoupper(substr($this->name, 0, 4)).'-7']);
-    }
-
     public function confirmationLine(): string
     {
         return $this->name.': your code is '.$this->code;
+    }
+
+    public function fulfiller(): string
+    {
+        return EmailTestFulfiller::class;
+    }
+}
+
+/**
+ * Saves a code that exists only after the payment, so the email can show it.
+ */
+class EmailTestFulfiller implements Fulfiller
+{
+    public function fulfil(Purchasable $item): void
+    {
+        if ($item instanceof EmailTestItem) {
+            $item->update(['code' => strtoupper(substr($item->name, 0, 4)).'-7']);
+        }
     }
 }
 
@@ -58,8 +72,8 @@ beforeEach(function () {
         $table->timestamps();
     });
 
-    app(Cart::class)->add(EmailTestItem::create(['name' => 'Admission ticket']));
-    app(Cart::class)->add(EmailTestItem::create(['name' => 'Gift certificate']));
+    app(CartService::class)->add(EmailTestItem::create(['name' => 'Admission ticket']));
+    app(CartService::class)->add(EmailTestItem::create(['name' => 'Gift certificate']));
 
     $this->post(route('checkout.store'), ['email' => 'parent@example.com']);
     $this->order = Order::sole();

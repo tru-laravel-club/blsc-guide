@@ -8,6 +8,7 @@ use App\Models\Inquiry;
 use App\Models\Program;
 use App\Models\User;
 use App\Notifications\SubmissionReceived;
+use App\Services\FormService;
 use Illuminate\Support\Facades\Notification;
 
 /*
@@ -15,7 +16,8 @@ use Illuminate\Support\Facades\Notification;
 |
 | A program with the request mode takes requests, such as a birthday party or a
 | school booking. A visitor does not need an account: a guest gives a name and an
-| email. Staff read each request, reply by email, and close it.
+| email. Staff read each request, reply by email, and close it. Staff cannot
+| delete a program that has requests.
 |
 | The model is called Inquiry, because Laravel already has a Request class.
 */
@@ -33,7 +35,7 @@ function programTakingRequests(array $attributes = [], array $form = []): Progra
 
     $requestForm = Form::factory()->create(['name' => 'Party request', ...$form]);
     $requestForm->fields()->attach($question, ['position' => 0, 'required' => true]);
-    $requestForm->publish();
+    app(FormService::class)->publish($requestForm);
 
     return Program::factory()->create(['name' => 'Birthday Parties', 'signup_mode' => 'request', 'form_id' => $requestForm->id, ...$attributes]);
 }
@@ -209,4 +211,17 @@ test('an unknown status is refused', function () {
         ->assertSessionHasErrors('status');
 
     expect($inquiry->fresh()->status)->toBe(InquiryStatus::Open);
+});
+
+test('staff cannot delete a program with a request', function () {
+    $program = programTakingRequests();
+    Inquiry::factory()->for($program)->create();
+
+    $this->actingAs(User::factory()->staff()->create())
+        ->from(route('admin.programs.edit', $program))
+        ->delete(route('admin.programs.destroy', $program))
+        ->assertRedirect(route('admin.programs.edit', $program))
+        ->assertSessionHasErrors('program');
+
+    expect($program->fresh())->not->toBeNull();
 });

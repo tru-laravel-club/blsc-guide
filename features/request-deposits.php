@@ -11,12 +11,14 @@ return Feature::make('request-deposits')
     ->level(2)
     ->needs(['requests', 'cart-orders'])
     ->summary('Staff ask for a deposit on a request, such as a party. The deposit amount comes from config, not from code.')
-    ->teaches(['Config files', 'Environment values', 'Signed URLs', 'On-demand notifications', 'hasOne relationships', 'Purchasable models'])
+    ->teaches(['Config files', 'Environment values', 'Signed URLs', 'On-demand notifications', 'hasOne relationships', 'Purchasable models', 'Service classes'])
     ->test('RequestDepositsTest.php')
     ->intro(<<<'TEXT'
         A family asks for a birthday party on a Saturday in March. Staff reply and agree on the date. Before the centre holds the date, it wants a deposit. Today staff must take the money by phone. In this feature, staff click one button, and the family gets an email with a link to pay.
 
-        Follow one deposit. A staff member opens the request and clicks **Ask for a deposit**. The amount field already holds the usual amount, such as $50.00, from config. Staff can change it for a big party. The app saves a `Deposit` for the request and queues an email to the address on the request. The email has a **Pay the deposit** button. The family clicks it, and the deposit is in their cart. They check out as a guest, with an email, and pay. The order calls `fulfil()`, which sets `paid_at`. Staff see "paid" on the request.
+        Follow one deposit. A staff member opens the request and clicks **Ask for a deposit**. The amount field already holds the usual amount, such as $50.00, from config. Staff can change it for a big party. `DepositService` saves a `Deposit` for the request, queues an email to the address on the request, and marks the request as replied. The email has a **Pay the deposit** button. The family clicks it, and the deposit is in their cart. They check out as a guest, with an email, and pay. `OrderService` asks the fulfiller of the deposit, `DepositService`, to fulfil it, and it sets `paid_at`. Staff see "paid" on the request.
+
+        The controllers only read the request, call the service and respond. The rules, such as "a paid deposit never changes", live in the service (see `/guide/services`).
 
         Two ideas make this safe and easy. First, the family has no account, so the link cannot depend on a login. It is a signed URL: Laravel adds a signature that only the app can make. If somebody changes the deposit ID in the link, the signature no longer matches, and the app answers 403. Second, the link only puts the deposit in the cart. It does not trust anything else in the URL. The price comes from the database when the cart asks `priceCents()`.
 
@@ -116,25 +118,24 @@ return Feature::make('request-deposits')
 
         Step::make('Make a deposit something the cart can sell')
             ->explain(<<<'TEXT'
-                Implement `App\Contracts\Purchasable` on `Deposit`, as `Ticket` and `GiftCertificate` do:
+                Implement `App\Contracts\Purchasable` on `Deposit`, as `Ticket` and `GiftCertificate` do. Each method only reads:
 
                 - `orderDescription()`: "Deposit: Birthday Parties, request from Maya Patel". Staff read the order and know which request it is for.
                 - `priceCents()`: `amount_cents`, from the database.
-                - `fulfil()`: set `paid_at` to now, once. Do nothing if it is already paid.
                 - `confirmationLine()`: "Deposit paid for your Birthday Parties request. Staff will contact you to confirm the details."
+                - `fulfiller()`: returns `DepositService::class`. You write that service in the next step.
 
-                Add one more method: `payUrl(): string`. It returns `URL::signedRoute('deposits.pay', $this)`. The email and the tests use it, so the link is built in one place.
+                Add one more read-only method: `payUrl(): string`. It returns `URL::signedRoute('deposits.pay', $this)`. The email and the tests use it, so the link is built in one place.
                 TEXT)
             ->think('Staff change the amount after the family put the deposit in the cart, but before they check out. Which amount do they pay? Why?')
-            ->hint('Copy the four methods from `GiftCertificate`. A deposit has no code: `paid_at` is what changes.')
+            ->hint('Copy the four methods from `GiftCertificate`. A deposit has no code: `paid_at` is what changes, and only its service changes it.')
             ->code(<<<'PHP'
-                public function fulfil(): void
+                /**
+                 * @return class-string<DepositService>
+                 */
+                public function fulfiller(): string
                 {
-                    if ($this->isPaid()) {
-                        return;
-                    }
-
-                    $this->forceFill(['paid_at' => now()])->save();
+                    return DepositService::class;
                 }
 
                 /**
@@ -145,24 +146,65 @@ return Feature::make('request-deposits')
                     return URL::signedRoute('deposits.pay', $this);
                 }
                 PHP)
-            ->tryIt('In tinker, run `$d = App\Models\Deposit::factory()->create(); $d->fulfil(); $d->isPaid()`. You see `true`.')
+            ->tryIt('In tinker, run `App\Models\Deposit::factory()->create()->orderDescription()`. You see "Deposit:", the program and the name on the request.')
             ->commit('Make deposits purchasable')
-            ->docs('https://laravel.com/docs/eloquent#mass-assignment', 'Laravel docs: Mass assignment')
+            ->docs('https://laravel.com/docs/urls#signed-urls', 'Laravel docs: Signed URLs')
             ->check(Check::fileContains('app/Models/Deposit.php', 'implements Purchasable')),
+
+        Step::make('Mark a paid deposit in the deposit service')
+            ->run('php artisan make:class Services/DepositService')
+            ->explain(<<<'TEXT'
+                Run the command below. It makes `app/Services/DepositService.php`. Add `implements Fulfiller`, as `TicketService` does.
+
+                `fulfil(Purchasable $item): void` sets `paid_at` to now, once:
+
+                1. Check that the item is a `Deposit`. If it is not, throw an `InvalidArgumentException`.
+                2. Update the row only where `paid_at` is still `null`. The database checks and changes it in one step, so a second call, or two at the same moment, never changes the date of the payment.
+                3. `refresh()` the model, so the caller sees the new date.
+
+                `OrderService::markAsPaid()` already fulfils an order once. A fulfiller still protects itself: it is the last place that knows what "paid" means for a deposit.
+
+                This service gets a second method soon: staff ask for a deposit through it. All the work on deposits lives in one class.
+                TEXT)
+            ->think('Why does `paid_at` change in a service, and not in a method on the model or in a controller?')
+            ->hint('`Deposit::whereKey($item->id)->whereNull(\'paid_at\')->update([\'paid_at\' => now()])` changes the row only if nobody has paid yet.')
+            ->code(<<<'PHP'
+                class DepositService implements Fulfiller
+                {
+                    /**
+                     * Mark a paid deposit with the time of the payment, once.
+                     */
+                    public function fulfil(Purchasable $item): void
+                    {
+                        if (! $item instanceof Deposit) {
+                            throw new InvalidArgumentException('DepositService fulfils deposits only.');
+                        }
+
+                        Deposit::whereKey($item->id)->whereNull('paid_at')->update(['paid_at' => now()]);
+
+                        $item->refresh();
+                    }
+                }
+                PHP)
+            ->tryIt('In tinker, run `$d = App\Models\Deposit::factory()->create(); app(App\Services\DepositService::class)->fulfil($d); $d->isPaid()`. You see `true`. Run the `fulfil()` line again: `paid_at` keeps its first time.')
+            ->commit('Mark paid deposits in the deposit service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/eloquent#mass-updates', 'Laravel docs: Mass updates')
+            ->check(Check::fileContains('app/Services/DepositService.php', 'implements Fulfiller')),
 
         Step::make('Add the signed link that fills the cart')
             ->run('php artisan make:controller DepositController --invokable')
             ->explain(<<<'TEXT'
                 Add `Route::get('/deposits/{deposit}/pay', DepositController::class)->name('deposits.pay')` to the `signed` group in `routes/web.php`, next to the payment routes. The `signed` middleware checks the signature before your controller runs. A changed or missing signature gets a 403 page.
 
-                The controller does one thing. If the deposit is paid, it sends the family to the cart with a message. Otherwise it adds the deposit to the cart and goes to the cart.
+                The controller does one thing. If the deposit is paid, it sends the family to the cart with a message. Otherwise it adds the deposit to the cart with `CartService` and goes to the cart. It changes no data, so it needs no other service.
 
                 Why `GET`? A link in an email can only open a page. Here a `GET` is safe: a second click adds the same deposit to the cart again, and the cart keeps it once.
                 TEXT)
             ->think('The family forwards the email to a grandparent. What can the grandparent do with the link? Is that a problem?')
             ->hint('`$cart->add($deposit)` uses the key `deposit-5`. A second call replaces the same key.')
             ->code(<<<'PHP'
-                public function __invoke(Deposit $deposit, Cart $cart): RedirectResponse
+                public function __invoke(Deposit $deposit, CartService $cart): RedirectResponse
                 {
                     if ($deposit->isPaid()) {
                         return to_route('cart.show')->with('status', 'This deposit is already paid. Thank you.');
@@ -203,58 +245,105 @@ return Feature::make('request-deposits')
                         ->line('You do not need an account. The button puts the deposit in your cart.');
                 }
                 PHP)
-            ->tryIt('Run `php artisan test --filter="the link in the email"`. The rule passes: the link in the email is the signed link, and it fills the cart of a guest.')
+            ->tryIt('In tinker, run `$d = App\Models\Deposit::factory()->create(); (new App\Notifications\DepositRequested($d))->toMail(new Illuminate\Notifications\AnonymousNotifiable)->actionUrl === $d->payUrl()`. You see `true`: the button in the email is the signed link.')
             ->commit('Email the deposit link')
             ->docs('https://laravel.com/docs/notifications#on-demand-notifications', 'Laravel docs: On-demand notifications')
             ->docs('https://laravel.com/docs/notifications#queueing-notifications', 'Laravel docs: Queueing notifications')
             ->check(Check::fileExists('app/Notifications/DepositRequested.php')),
+
+        Step::make('Ask for a deposit in the service')
+            ->run('php artisan make:exception DepositAlreadyPaid')
+            ->explain(<<<'TEXT'
+                Add the second method to `DepositService`: `request(Inquiry $inquiry, int $amountCents): Deposit`. Staff call it to ask for a deposit, and again to change the amount. It does four things:
+
+                1. Refuse a paid deposit. A paid amount must never change. Throw `DepositAlreadyPaid` with the message "This deposit is already paid. Its amount cannot change."
+                2. Save the amount with `$inquiry->deposit()->updateOrCreate([], [...])`. The first time it creates the deposit. Later it changes the amount of the same deposit.
+                3. Send the email to the address on the request.
+                4. Mark an open request as replied. Staff did reply: they sent an email. Do not change the status yourself. Ask for `InquiryService` in the constructor, and call `changeStatus()`, so every status change of a request goes through one method.
+
+                The amount arrives in cents. The service does not know that staff type dollars in a form: that is HTTP work, for the controller.
+                TEXT)
+            ->think('`updateOrCreate([], [...])` gets an empty first array. Which condition finds the existing deposit? Why does the relationship make it safe?')
+            ->hint('`if ($inquiry->deposit?->isPaid()) { throw new DepositAlreadyPaid; }` refuses before anything changes.')
+            ->hint('`Notification::route(\'mail\', $inquiry->email)->notify(new DepositRequested($deposit))` emails a visitor without an account.')
+            ->code(<<<'PHP'
+                public function __construct(private InquiryService $inquiries) {}
+
+                /**
+                 * Ask for a deposit on the request, or change its amount, and email the link to pay.
+                 *
+                 * @throws DepositAlreadyPaid when the family already paid the deposit
+                 */
+                public function request(Inquiry $inquiry, int $amountCents): Deposit
+                {
+                    if ($inquiry->deposit?->isPaid()) {
+                        throw new DepositAlreadyPaid;
+                    }
+
+                    $deposit = $inquiry->deposit()->updateOrCreate([], ['amount_cents' => $amountCents]);
+
+                    Notification::route('mail', $inquiry->email)->notify(new DepositRequested($deposit));
+
+                    if ($inquiry->status === InquiryStatus::Open) {
+                        $this->inquiries->changeStatus($inquiry, InquiryStatus::Replied);
+                    }
+
+                    return $deposit;
+                }
+                PHP)
+            ->tryIt('In tinker, run `$i = App\Models\Inquiry::factory()->create(); app(App\Services\DepositService::class)->request($i, 6000)->amount_cents; $i->fresh()->status`. You see `6000` and the `Replied` case.')
+            ->commit('Ask for deposits in the deposit service')
+            ->docs('https://laravel.com/docs/eloquent#upserts', 'Laravel docs: Upserts')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->check(Check::all(
+                Check::fileContains('app/Services/DepositService.php', 'function request'),
+                Check::fileExists('app/Exceptions/DepositAlreadyPaid.php'),
+            )),
 
         Step::make('Let staff ask for a deposit')
             ->run('php artisan make:controller Admin/DepositController')
             ->explain(<<<'TEXT'
                 Add `Route::post('inquiries/{inquiry}/deposit', ...)` in the staff group, named `admin.inquiries.deposit.store`.
 
-                The `store()` method:
+                The `store()` method does only HTTP work:
 
                 1. Validates `amount` in dollars, as the session form does: required, numeric, at least 1, at most two decimals.
-                2. Refuses a paid deposit with an `amount` error. A paid amount must never change.
-                3. Saves the amount in cents with `$inquiry->deposit()->updateOrCreate([], [...])`. The first time it creates the deposit. Later it changes the amount of the same deposit.
-                4. Sends the email, and goes back to the request with a message.
+                2. Turns the dollars into cents, and calls `$deposits->request($inquiry, $cents)`.
+                3. When the service throws `DepositAlreadyPaid`, goes back with an `amount` error and the message of the exception.
+                4. Otherwise goes back to the request with a message.
 
                 On `admin/inquiries/show.blade.php`, add a "Deposit" section. When the deposit is paid, show the amount and the date. Otherwise show an amount field and a button. The field starts with the current amount, or with `config('blsc.deposit_cents')` for a new deposit. The button says "Ask for a deposit", or "Change and send again".
                 TEXT)
-            ->think('`updateOrCreate([], [...])` gets an empty first array. Which condition finds the existing deposit? Why does the relationship make it safe?')
+            ->think('The form checks the amount, and the service checks that the deposit is not paid. Why does each check live where it lives?')
             ->hint('`(int) round(((float) $validated[\'amount\']) * 100)` turns "80.50" into `8050` without a float error.')
             ->hint('`number_format(config(\'blsc.deposit_cents\') / 100, 2, \'.\', \'\')` gives `50.00` for the number field.')
             ->code(<<<'PHP'
-                public function store(Request $request, Inquiry $inquiry): RedirectResponse
+                public function store(Request $request, Inquiry $inquiry, DepositService $deposits): RedirectResponse
                 {
                     $validated = $request->validate([
                         'amount' => ['required', 'numeric', 'min:1', 'max:5000', 'decimal:0,2'],
                     ]);
 
-                    if ($inquiry->deposit?->isPaid()) {
-                        return back()->withErrors(['amount' => 'This deposit is already paid. Its amount cannot change.']);
+                    try {
+                        $deposits->request($inquiry, (int) round(((float) $validated['amount']) * 100));
+                    } catch (DepositAlreadyPaid $exception) {
+                        return back()->withErrors(['amount' => $exception->getMessage()]);
                     }
-
-                    $deposit = $inquiry->deposit()->updateOrCreate([], [
-                        'amount_cents' => (int) round(((float) $validated['amount']) * 100),
-                    ]);
-
-                    Notification::route('mail', $inquiry->email)->notify(new DepositRequested($deposit));
 
                     return to_route('admin.inquiries.show', $inquiry)->with('status', "We emailed {$inquiry->email} a link to pay the deposit.");
                 }
                 PHP)
             ->tryIt(<<<'TEXT'
-                Send a party request as a guest on http://localhost:8000/programs/parties/birthday-parties. Log in as `staff@example.com`, open Programs, the party program, and your request. The Deposit section shows $50.00. Click Ask for a deposit.
+                Send a party request as a guest on http://localhost:8000/programs/parties/birthday-parties. Log in as `staff@example.com`, open Programs, the party program, and your request. The Deposit section shows $50.00. Click Ask for a deposit. The status of the request is now "Replied".
 
                 `composer dev` runs the queue. Open `storage/logs/laravel.log` and find "Pay the deposit". Copy the link and open it in a private window. Check out with an email and approve the fake payment. Back on the staff page, the deposit shows "paid".
                 TEXT)
             ->commit('Let staff ask for a deposit')
-            ->docs('https://laravel.com/docs/eloquent#upserts', 'Laravel docs: Upserts')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/11', 'Laravel From Scratch, episode 11: Request Validation')
-            ->check(Check::route('admin.inquiries.deposit.store')),
+            ->check(Check::all(
+                Check::route('admin.inquiries.deposit.store'),
+                Check::fileContains('app/Http/Controllers/Admin/DepositController.php', 'DepositService'),
+            )),
 
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify request-deposits')

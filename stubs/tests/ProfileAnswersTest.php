@@ -8,6 +8,7 @@ use App\Models\Form;
 use App\Models\ProfileValue;
 use App\Models\Submission;
 use App\Models\User;
+use App\Services\FormService;
 use Illuminate\Support\Carbon;
 
 /*
@@ -32,7 +33,7 @@ function profileForm(string $slug, array $fields): Form
         $form->fields()->attach($field, ['position' => $position, 'required' => false]);
     }
 
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     return $form;
 }

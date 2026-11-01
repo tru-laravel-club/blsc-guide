@@ -11,16 +11,18 @@ return Feature::make('submissions')
     ->level(3)
     ->needs(['form-display'])
     ->summary('Staff publish form versions. Each submission keeps the version that the person answered, so old answers never break.')
-    ->teaches(['JSON columns as snapshots', 'hasOne of many', 'hasManyThrough', 'Shallow nested resources', 'Changing an old test on purpose'])
+    ->teaches(['JSON columns as snapshots', 'hasOne of many', 'hasManyThrough', 'Service classes', 'Shallow nested resources', 'Changing an old test on purpose'])
     ->test('SubmissionsTest.php')
     ->intro(<<<'TEXT'
         The forms work, but the answers go nowhere. In this feature, you save them. That sounds easy: one table with the answers as JSON. The hard part is time.
 
         A parent registers a child for the summer camp in March. In May, staff change the question "School" to "Name of your school", archive the question about T-shirt sizes, and add a question about swimming. What must the March registration show? It must show the questions that the parent saw in March, with the answers that the parent gave.
 
-        So staff do not change a live form. They change a **draft**, the fields in the `form_field` table. Then they **publish**. `Form::publish()` saves a `FormVersion` with the next number and a JSON copy of the field definitions, as `Form::fieldDefinitions()` makes them. Archived fields are left out. The public page always shows the latest published version, and the draft can change in peace.
+        So staff do not change a live form. They change a **draft**, the fields in the `form_field` table. Then they **publish**. `FormService::publish()` saves a `FormVersion` with the next number and a JSON copy of the field definitions, as `Form::fieldDefinitions()` makes them. Archived fields are left out. The public page always shows the latest published version, and the draft can change in peace.
 
         A `Submission` belongs to one version. Its answers are JSON, keyed by the field key, such as `{"school": "Westsyde Elementary"}`. The staff page shows each submission with the labels of its own version.
+
+        Both publishing and saving answers change data, so each one goes in a service. Remember the rule from "Forms and fields": **controllers do HTTP, services do the work**. `FormService` publishes versions. `FormSubmissionService` saves the answers. Applications, requests and registrations send answers too, later. They all call the same `FormSubmissionService::submit()`, so the rules for saving answers live in one place.
 
         Other code reads answers in two ways. `Submission::answer('school')` reads by key, and the key never changes. `Submission::answerForRole(FieldRole::EmergencyPhone)` finds the field with that role in the version, and reads its answer. The registration lists use roles, so they work after staff rename a field.
         TEXT)
@@ -41,10 +43,12 @@ return Feature::make('submissions')
 
                 Read the rule "an old submission keeps its old labels after staff change a label and publish". It tells the whole story of this feature: answer, rename, publish, answer again, and then each submission shows its own labels.
 
+                The test calls `Field::factory()->type(FieldType::Email)`. If your `FieldFactory` from "Forms and fields" has no `type()` state, add it now.
+
                 Look at the rule "a form shows its latest published version, not the draft", too. The form is not found until staff publish it. That changes how `/forms/{slug}` works, so one old test will fail. You fix it on purpose in a later step.
                 TEXT)
-            ->think('The test calls `$form->publish()` two times in a row with no change. What does the second version hold? Is that a problem?')
-            ->tryIt('Run `php artisan test tests/Feature/SubmissionsTest.php`. All the rules fail, because `publish()` does not exist yet.')
+            ->think('The test calls `app(FormService::class)->publish($form)` two times in a row with no change. What does the second version hold? Is that a problem?')
+            ->tryIt('Run `php artisan test tests/Feature/SubmissionsTest.php`. All the rules fail, because `FormService` does not exist yet.')
             ->commit('Add the submissions acceptance test')
             ->docs('https://laravel.com/docs/http-tests', 'Laravel docs: HTTP tests')
             ->check(Check::fileExists('tests/Feature/SubmissionsTest.php')),
@@ -56,7 +60,7 @@ return Feature::make('submissions')
 
                 Use `restrictOnDelete()` on the foreign key. A version holds the questions of old answers. The database must refuse to delete it while its form exists.
 
-                In the model, cast `fields` to `array` and `published_at` to a datetime. Add `form()` and `submissions()`. In the docblock, write the type of `fields` as a list of definitions: `@property array<int, Definition> $fields`, with `@phpstan-import-type Definition from FormRules`. Then PHPStan knows that `$version->fields[0]['key']` is a string.
+                In the model, put `number`, `fields` and `published_at` in `#[Fillable]`. Cast `fields` to `array` and `published_at` to a datetime. Add `form()` and `submissions()`. In the docblock, write the type of `fields` as a list of definitions: `@property array<int, Definition> $fields`, with `@phpstan-import-type Definition from FormRules`. Then PHPStan knows that `$version->fields[0]['key']` is a string.
                 TEXT)
             ->think('The `fields` column holds a copy of data that is also in the `fields` table. Usually, a copy is a bad idea. Why is it the right idea here?')
             ->code(<<<'PHP'
@@ -81,10 +85,10 @@ return Feature::make('submissions')
 
                 Laravel guesses the name of a relationship from the foreign key. The key is `form_version_id`, but the relationship reads better as `version()`. So pass the key: `belongsTo(FormVersion::class, 'form_version_id')`.
 
-                Cast `answers` to `array`. In the factory, make a published form for the default version, so `Submission::factory()->create()` works alone.
+                Put `user_id`, `answers` and `submitted_at` in `#[Fillable]`. The version comes from the relationship, as `$version->submissions()->create()`. Cast `answers` to `array` and `submitted_at` to a datetime. Add `user()` too. In the factory, make a published form for the default version, so `Submission::factory()->create()` works alone.
                 TEXT)
             ->think('Why does a submission point to a version, and not to the form?')
-            ->hint('In the factory: `\'form_version_id\' => fn () => Form::factory()->create()->publish()->id`. The closure runs only when the test gives no version. You write `publish()` in the next step.')
+            ->hint('In the factory: `\'form_version_id\' => fn () => app(FormService::class)->publish(Form::factory()->create())->id`. The closure runs only when the test gives no version. You write `FormService` soon.')
             ->code(<<<'PHP'
                 $table->id();
                 $table->foreignId('form_version_id')->constrained()->restrictOnDelete();
@@ -98,22 +102,21 @@ return Feature::make('submissions')
             ->docs('https://laravel.com/docs/eloquent-relationships#one-to-many-inverse', 'Laravel docs: One to many (inverse)')
             ->check(Check::table('submissions', ['form_version_id', 'user_id', 'answers', 'submitted_at'])),
 
-        Step::make('Publish a version, and find the current one')
+        Step::make('Find the versions of a form, and the current one')
             ->explain(<<<'TEXT'
-                Add four things to `Form`:
+                Add three relationships to `Form`:
 
                 - `versions(): HasMany`, sorted by `number`.
                 - `currentVersion(): HasOne`. A form has many versions, but you often need only the newest. `latestOfMany('number')` makes a "has one" relationship from the version with the highest number. You can load it with `with('currentVersion')` for a list of forms, with no extra query for each form.
                 - `submissions(): HasManyThrough`. A form reaches its submissions through its versions. Staff need all of them on one page.
-                - `publish(): FormVersion`. It creates the next version with the number after the highest one, a copy of `fieldDefinitions()`, and `published_at` set to now.
 
-                `fieldDefinitions()` already leaves out archived fields. So `publish()` does too, with no new code.
+                These methods only read. They belong in the model.
                 TEXT)
-            ->think('Two staff members click Publish at the same moment. Both read the highest number, 3. What stops two versions with the number 4?')
-            ->hint('`$this->versions()->max(\'number\')` is `null` when there is no version. `null + 1` is `1` in PHP.')
-            ->hint('After `publish()`, `$form->currentVersion` may still hold the old version that Eloquent loaded before. `$this->setRelation(\'currentVersion\', $version)` updates it.')
+            ->think('Why is `currentVersion()` a relationship, and not a method that returns `$this->versions()->latest(\'number\')->first()`? Think of a list of 30 forms.')
             ->code(<<<'PHP'
                 /**
+                 * The latest published version. Visitors answer this one.
+                 *
                  * @return HasOne<FormVersion, $this>
                  */
                 public function currentVersion(): HasOne
@@ -122,26 +125,57 @@ return Feature::make('submissions')
                 }
 
                 /**
-                 * Publish the fields as they are now. Save a copy of their definitions as the next version.
+                 * @return HasManyThrough<Submission, FormVersion, $this>
                  */
-                public function publish(): FormVersion
+                public function submissions(): HasManyThrough
                 {
-                    $version = $this->versions()->create([
-                        'number' => $this->versions()->max('number') + 1,
-                        'fields' => $this->fieldDefinitions(),
-                        'published_at' => now(),
-                    ]);
-
-                    $this->setRelation('currentVersion', $version);
-
-                    return $version;
+                    return $this->hasManyThrough(Submission::class, FormVersion::class);
                 }
                 PHP)
-            ->tryIt('In tinker, run `$form = App\Models\Form::firstWhere(\'slug\', \'contact\'); $form->publish(); $form->publish()->number`. You see the number of the second version. Then run `$form->fresh()->currentVersion->number`.')
-            ->commit('Publish form versions')
+            ->tryIt('In tinker, run `App\Models\Form::with(\'currentVersion\')->get()->pluck(\'currentVersion\', \'name\')`. Each form has `null`, because nobody has published yet.')
+            ->commit('Connect forms to their versions')
             ->docs('https://laravel.com/docs/eloquent-relationships#has-one-of-many', 'Laravel docs: Has one of many')
             ->docs('https://laravel.com/docs/eloquent-relationships#has-many-through', 'Laravel docs: Has many through')
-            ->check(Check::fileContains('app/Models/Form.php', 'function publish')),
+            ->check(Check::fileContains('app/Models/Form.php', 'function currentVersion')),
+
+        Step::make('Publish a version in the form service')
+            ->run('php artisan make:class Services/FormService')
+            ->explain(<<<'TEXT'
+                Publishing writes a new row, so it goes in a service, not in the model or the controller. Run the command below. It makes `app/Services/FormService.php`. The form editor feature adds more methods to it later, such as `addField()`.
+
+                Add `publish(Form $form): FormVersion`. It creates the next version with the number after the highest one, a copy of `fieldDefinitions()`, and `published_at` set to now.
+
+                `fieldDefinitions()` already leaves out archived fields. So `publish()` does too, with no new code.
+
+                The tests, the seeder and the staff pages all publish. They get the service from Laravel: a controller asks for it as a parameter, and other code calls `app(FormService::class)`.
+                TEXT)
+            ->think('Why put `publish()` in a service and not on the `Form` model? What else can happen at publish time next year?')
+            ->hint('`$form->versions()->max(\'number\')` is `null` when there is no version. `null + 1` is `1` in PHP.')
+            ->hint('After `publish()`, `$form->currentVersion` may still hold the old version that Eloquent loaded before. `$form->setRelation(\'currentVersion\', $version)` updates it.')
+            ->code(<<<'PHP'
+                class FormService
+                {
+                    /**
+                     * Publish the fields as they are now. Save a copy of their definitions as the next version.
+                     */
+                    public function publish(Form $form): FormVersion
+                    {
+                        $version = $form->versions()->create([
+                            'number' => $form->versions()->max('number') + 1,
+                            'fields' => $form->fieldDefinitions(),
+                            'published_at' => now(),
+                        ]);
+
+                        $form->setRelation('currentVersion', $version);
+
+                        return $version;
+                    }
+                }
+                PHP)
+            ->tryIt('In tinker, run `$form = App\Models\Form::firstWhere(\'slug\', \'contact\'); $forms = app(App\Services\FormService::class); $forms->publish($form); $forms->publish($form)->number`. You see the number of the second version. Then run `$form->fresh()->currentVersion->number`.')
+            ->commit('Publish form versions')
+            ->docs('https://laravel.com/docs/container#zero-configuration-resolution', 'Laravel docs: Zero configuration resolution')
+            ->check(Check::fileContains('app/Services/FormService.php', 'function publish')),
 
         Step::make('Read answers by key and by role')
             ->explain(<<<'TEXT'
@@ -170,42 +204,87 @@ return Feature::make('submissions')
             ->commit('Read submission answers by key and role')
             ->check(Check::fileContains('app/Models/Submission.php', 'function answerForRole')),
 
-        Step::make('Answer the current version and save the submission')
+        Step::make('Save the answers in a service')
+            ->run('php artisan make:class Services/FormSubmissionService')
             ->explain(<<<'TEXT'
-                Change the public `FormController`. Both `show()` and `store()` now use `$form->currentVersion`. If there is none, the form is not published, so stop with a 404 page.
+                Saving answers is the core of every form: the contact form now, and applications, requests and registrations later. Put it in one service, `FormSubmissionService`, with two methods. Later features call them, so keep the names and the parameters.
 
-                `show()` passes `$version->fields` to the view. The view and `<x-dynamic-form>` do not change, because a version holds the same definitions as before. That is the payoff of the array contract from the last feature.
+                `fields(FormVersion $version, ?User $user = null, ?Child $child = null): array` returns the field definitions to show and to validate. For now, it returns `$version->fields`.
 
-                In `store()`, validate against `$version->fields`. Then create the submission through `$version->submissions()`. Build the answers from the fields of the version, not from the request: one entry for each key, with `null` for a question with no answer. A visitor cannot add extra keys, and every submission has the same keys as its version.
+                `submit(FormVersion $version, array $validated, ?User $user = null, ?Child $child = null): Submission` creates the submission through `$version->submissions()`. Build the answers from the fields of the version, not from the request: one entry for each key, with `null` for a question with no answer. A visitor cannot add extra keys, and every submission has the same keys as its version.
 
-                Now run all the tests. The tests in `FormDisplayTest.php` fail: their forms are not published, so the pages are 404. That is correct now. Add `$form->publish();` at the end of the helper `formForDisplay()`, before `return $form;`. Change an old test only when the behaviour changed on purpose, as here.
+                Both methods take a user and a child that they do not use yet. The "Saved profile answers" feature fills in the answers of a family and a child, and saves new answers to their profile. Because every caller already passes them, that feature changes this one class and no controller.
+
+                The service does not validate. Validation reads the request, and that is HTTP work. The controller validates and gives the service the clean answers.
                 TEXT)
             ->think('Why build the answers from the version\'s fields and not save `$request->all()`?')
-            ->hint('`$form->currentVersion ?? abort(404)` gives the version or stops with a 404 page.')
-            ->hint('`$request->user()?->id` is the ID of the signed-in person, or `null` for a guest.')
+            ->hint('`collect($version->fields)->mapWithKeys(fn (array $field) => [$field[\'key\'] => $validated[$field[\'key\']] ?? null])->all()` gives one answer for each key.')
             ->code(<<<'PHP'
-                public function store(Request $request, Form $form): RedirectResponse
+                class FormSubmissionService
+                {
+                    /**
+                     * The fields to show and to validate.
+                     *
+                     * @return array<int, Definition>
+                     */
+                    public function fields(FormVersion $version, ?User $user = null, ?Child $child = null): array
+                    {
+                        return $version->fields;
+                    }
+
+                    /**
+                     * Save validated answers as a new submission. A question with no answer is saved as null.
+                     *
+                     * @param  array<string, mixed>  $validated
+                     */
+                    public function submit(FormVersion $version, array $validated, ?User $user = null, ?Child $child = null): Submission
+                    {
+                        return $version->submissions()->create([
+                            'user_id' => $user?->id,
+                            'answers' => collect($version->fields)->mapWithKeys(fn (array $field) => [
+                                $field['key'] => $validated[$field['key']] ?? null,
+                            ])->all(),
+                            'submitted_at' => now(),
+                        ]);
+                    }
+                }
+                PHP)
+            ->tryIt('In tinker, run `$version = App\Models\Form::firstWhere(\'slug\', \'contact\')->currentVersion; app(App\Services\FormSubmissionService::class)->submit($version, [\'message\' => \'Hello\', \'extra\' => \'x\'])->answers`. You see every key of the version, with `null` for the empty ones, and no `extra`.')
+            ->commit('Save submissions in a service')
+            ->docs('https://laravel.com/docs/eloquent-relationships#the-create-method', 'Laravel docs: The create method')
+            ->check(Check::fileContains('app/Services/FormSubmissionService.php', 'function submit')),
+
+        Step::make('Answer the current version')
+            ->explain(<<<'TEXT'
+                Change the public `FormController`. Both `show()` and `store()` now use `$form->currentVersion`. If there is none, the form is not published, so stop with a 404 page. Both ask for `FormSubmissionService` as a parameter.
+
+                `show()` passes `$submissions->fields($version)` to the view. The view and `<x-dynamic-form>` do not change, because a version holds the same definitions as before. That is the payoff of the array contract from the last feature.
+
+                `store()` does the HTTP work: it gets the fields from the service, validates the request against them, calls `submit()`, and redirects.
+
+                Now run all the tests. The tests in `FormDisplayTest.php` fail: their forms are not published, so the pages are 404. That is correct now. Add `app(FormService::class)->publish($form);` at the end of the helper `formForDisplay()`, before `return $form;`, and import `App\Services\FormService`. Change an old test only when the behaviour changed on purpose, as here.
+                TEXT)
+            ->think('The controller validates, and the service saves. What would go wrong if the service read `request()` itself? Think of a test, or a console command that imports old answers.')
+            ->hint('`$form->currentVersion ?? abort(404)` gives the version or stops with a 404 page.')
+            ->hint('`$request->user()` is the signed-in person, or `null` for a guest. Pass it to both methods.')
+            ->code(<<<'PHP'
+                public function store(Request $request, Form $form, FormSubmissionService $submissions): RedirectResponse
                 {
                     $version = $form->currentVersion ?? abort(404);
+                    $fields = $submissions->fields($version, $request->user());
 
-                    $validated = $request->validate(FormRules::for($version->fields), [], array_column($version->fields, 'label', 'key'));
+                    $validated = $request->validate(FormRules::for($fields), [], array_column($fields, 'label', 'key'));
 
-                    $version->submissions()->create([
-                        'user_id' => $request->user()?->id,
-                        'answers' => collect($version->fields)->mapWithKeys(fn (array $field) => [
-                            $field['key'] => $validated[$field['key']] ?? null,
-                        ])->all(),
-                        'submitted_at' => now(),
-                    ]);
+                    $submissions->submit($version, $validated, $request->user());
 
                     return to_route('forms.thanks', $form);
                 }
                 PHP)
-            ->tryIt('Run `php artisan test`. All the tests in `FormDisplayTest.php` pass again after you add `publish()` to the helper.')
+            ->tryIt('Run `php artisan test`. All the tests in `FormDisplayTest.php` pass again after you publish the form in the helper.')
             ->commit('Save submissions to the current version')
-            ->docs('https://laravel.com/docs/eloquent-relationships#the-create-method', 'Laravel docs: The create method')
+            ->docs('https://laravel.com/docs/controllers#method-injection', 'Laravel docs: Method injection')
             ->docs('https://laravel.com/docs/errors#http-exceptions', 'Laravel docs: HTTP exceptions')
-            ->check(Check::fileContains('app/Http/Controllers/FormController.php', 'submissions()->create')),
+            ->check(Check::fileContains('app/Http/Controllers/FormController.php', 'FormSubmissionService')),
 
         Step::make('Turn an answer into text')
             ->explain(<<<'TEXT'
@@ -254,7 +333,7 @@ return Feature::make('submissions')
 
                 The list shows the newest first, with the date, the person ("Guest" when there is no user), the version number and the first answer. Paginate it: a busy form gets many submissions.
 
-                The show page loops over `$submission->version->fields`, not over the fields of the form. So each submission shows the labels of its own version. Use `AnswerText::for()` for each answer. Add a "Forms" link to the staff menu.
+                The show page loops over `$submission->version->fields`, not over the fields of the form. So each submission shows the labels of its own version. Use `AnswerText::for()` for each answer. Give every link on these pages `wire:navigate`. Add a "Forms" link to the staff menu in `resources/views/layouts/app.blade.php`, after "Field library", with `wire:navigate` too.
                 TEXT)
             ->think('The show page loops over the version\'s fields. A newer version added a question. What does an old submission show for it?')
             ->hint('`$form->submissions()->with([\'version\', \'user\'])->latest(\'submitted_at\')->paginate(50)` loads what the list needs in three queries.')
@@ -283,7 +362,7 @@ return Feature::make('submissions')
             ->think('Why not publish in every run of the seeder?')
             ->code(<<<'PHP'
                 if ($contact->currentVersion === null) {
-                    $contact->publish();
+                    app(FormService::class)->publish($contact);
                 }
                 PHP)
             ->tryIt(<<<'TEXT'
@@ -291,10 +370,10 @@ return Feature::make('submissions')
 
                 Log in as staff and open Forms. The contact form has one submission. Open it: you see your answers with the labels of version 1.
 
-                Now change the label "Your name" to "Full name" in the Field library. In tinker, run `App\Models\Form::firstWhere('slug', 'contact')->publish()`. Send the form again. The old submission still says "Your name". The new one says "Full name".
+                Now change the label "Your name" to "Full name" in the Field library. In tinker, run `app(App\Services\FormService::class)->publish(App\Models\Form::firstWhere('slug', 'contact'))`. Send the form again. The old submission still says "Your name". The new one says "Full name".
                 TEXT)
             ->commit('Publish the seeded contact form')
-            ->check(Check::fileContains('database/seeders/FormSeeder.php', 'publish()')),
+            ->check(Check::fileContains('database/seeders/FormSeeder.php', 'FormService')),
 
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify submissions')

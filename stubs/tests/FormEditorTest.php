@@ -6,6 +6,7 @@ use App\Models\Field;
 use App\Models\Form;
 use App\Models\Program;
 use App\Models\User;
+use App\Services\FormService;
 use Livewire\Livewire;
 
 /*
@@ -89,7 +90,8 @@ test('staff add fields from the library, but not archived ones', function () {
         ->assertDontSee('Fax number')
         ->set('newField', $school->id)
         ->call('add')
-        ->assertHasNoErrors();
+        ->assertHasNoErrors()
+        ->assertSeeHtml('wire:key="field-'.$school->id.'"');
 
     expect($form->fields()->pluck('key')->all())->toBe([$school->key]);
 });
@@ -163,7 +165,7 @@ test('a person who is not staff cannot use the editor', function () {
 test('a field with answers cannot change its type', function () {
     $field = Field::factory()->create(['key' => 'school', 'label' => 'School']);
     $form = formForEditor([$field]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
     $staff = User::factory()->staff()->create();
 

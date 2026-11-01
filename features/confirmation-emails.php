@@ -16,7 +16,7 @@ return Feature::make('confirmation-emails')
     ->intro(<<<'TEXT'
         A family pays for an order. They need a receipt and the details of what they bought: a ticket code, the dates of a membership, the code of a gift certificate. A guest has no account, so the email is the only place where they find their order again.
 
-        The Cart and orders feature already sends an `OrderPaid` event after it fulfils the items. In this feature, a listener hears that event and queues an `OrderConfirmation` mail to the order's email address.
+        The Cart and orders feature already sends an `OrderPaid` event: `OrderService::markAsPaid()` sends it after the fulfillers did their work. In this feature, a listener hears that event and queues an `OrderConfirmation` mail to the order's email address.
 
         The email does not know what it confirms. It asks each item for its `confirmationLine()`, from the `Purchasable` interface. A ticket writes its code, and a membership writes its dates. When the centre sells a new kind of thing, the email needs no change.
 
@@ -37,12 +37,12 @@ return Feature::make('confirmation-emails')
             ->explain(<<<'TEXT'
                 Run the command below. It copies `tests/Feature/ConfirmationEmailsTest.php` into the app.
 
-                The test defines its own purchasable, `EmailTestItem`, as the cart test does. Its `fulfil()` saves a code, and its `confirmationLine()` writes the code. So the test proves that the email shows a line that only exists after the payment.
+                The test defines its own purchasable, `EmailTestItem`, and its own fulfiller, `EmailTestFulfiller`, as the cart test does. The fulfiller saves a code, and `confirmationLine()` writes the code. So the test proves that the email shows a line that only exists after the payment.
 
                 `Mail::fake()` in `beforeEach()` stops every real email. The rules then ask the fake what the app tried to send: `Mail::assertQueued()` and `Mail::assertNothingQueued()`.
                 TEXT)
             ->think('The second rule makes a new `OrderConfirmation` and reads its text. Why does it not need to send the email to check the text?')
-            ->tryIt('Run `php artisan test tests/Feature/ConfirmationEmailsTest.php`. All the rules fail, because `App\Mail\OrderConfirmation` does not exist yet.')
+            ->tryIt('Run `php artisan test tests/Feature/ConfirmationEmailsTest.php`. Four rules fail, because `App\Mail\OrderConfirmation` does not exist yet. The rule "a failed payment sends no email" passes already: nothing sends an email yet. It starts to mean something when you add the listener.')
             ->commit('Add the confirmation emails acceptance test')
             ->docs('https://laravel.com/docs/mail#testing-mailable-sending', 'Laravel docs: Testing mailable sending')
             ->check(Check::fileExists('tests/Feature/ConfirmationEmailsTest.php')),
@@ -137,9 +137,11 @@ return Feature::make('confirmation-emails')
 
                 In `handle()`, queue the mailable to the order's email: `Mail::to($event->order->email)->queue(...)`. Every order has an email, also a guest order, so you do not need the user.
 
-                You do not need a check for "already sent". `markAsPaid()` sends `OrderPaid` only once for each order. The listener trusts that rule. The last rule of the test proves it: the same payment twice gives one email.
+                The listener saves nothing, so it needs no service. It is a front door, like a controller: it receives the event and does one thing. If the email later needs rules of its own, such as "staff get a copy of large orders", move the work into a service then.
+
+                You do not need a check for "already sent". `OrderService::markAsPaid()` sends `OrderPaid` only once for each order, and `PaymentService::complete()` announces each payment once. The listener trusts those rules. The last rule of the test proves it: the same payment twice gives one email.
                 TEXT)
-            ->think('Cart and orders sends `OrderPaid`, and this feature listens. What changed in the cart code to add the email? Why is that good?')
+            ->think('`OrderService` sends `OrderPaid`, and this feature listens. What changed in `OrderService` to add the email? Why is that good?')
             ->hint('Remove the empty constructor that the command made. The listener needs nothing in it.')
             ->code(<<<'PHP'
                 public function handle(OrderPaid $event): void

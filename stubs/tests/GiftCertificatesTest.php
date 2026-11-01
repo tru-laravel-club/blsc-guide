@@ -1,9 +1,9 @@
 <?php
 
-use App\Cart;
 use App\Models\GiftCertificate;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\CartService;
 use Illuminate\Support\Facades\URL;
 
 /*
@@ -27,7 +27,7 @@ test('a visitor buys a gift certificate and gets its code after the payment', fu
     $certificate = GiftCertificate::sole();
     expect($certificate->code)->toBeNull()
         ->and($certificate->amount_cents)->toBe(5000)
-        ->and(app(Cart::class)->total(null))->toBe(5000);
+        ->and(app(CartService::class)->total(null))->toBe(5000);
 
     $this->post(route('checkout.store'), ['email' => 'aunt@example.com']);
     $order = Order::sole();

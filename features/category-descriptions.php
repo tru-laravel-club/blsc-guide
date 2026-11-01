@@ -25,7 +25,7 @@ return Feature::make('category-descriptions')
         The path of a description:
 
         1. Staff write the text in the editor on the category form, and save.
-        2. `CategoryRequest` lets the field through. The `SafeHtml` cast on `Category` cleans the HTML before the save.
+        2. `CategoryRequest` lets the field through, and `CategoryService` saves it. The `SafeHtml` cast on `Category` cleans the HTML before the save.
         3. The category page shows the clean HTML with `{!! !!}`, above the programs.
         TEXT)
     ->docs('https://laravel.com/docs/eloquent-mutators#custom-casts', 'Laravel docs: Custom casts')
@@ -59,12 +59,12 @@ return Feature::make('category-descriptions')
             ->explain(<<<'TEXT'
                 Add a nullable `description` column to `categories`, after `summary`. Write `down()` too: it drops the column.
 
-                Use `text`, not `string`. A `string` column holds a short value, such as a name. A description holds many paragraphs of HTML, so it needs a `text` column. The `description` of `programs` and the `body` of `pages` use `text` for the same reason.
+                Use `text`, not `string`. A `string` column holds a short value, such as a name. A description holds many paragraphs of HTML, so it needs a `text` column. The `description` of `programs` uses `text` for the same reason.
 
                 The column is nullable, because the categories that exist have no description. Many categories never need one. The Clubs page explains itself with its list of clubs.
                 TEXT)
             ->think('The table already has a `summary`. Why not make `summary` longer and put the HTML there?')
-            ->hint('Look at `database/migrations/*_add_cover_to_pages_table.php`. It adds columns to a table that exists, with `Schema::table()`.')
+            ->hint('Look at `database/migrations/*_add_category_id_to_programs_table.php`. It adds a column to a table that exists, with `Schema::table()`.')
             ->code(<<<'PHP'
                 Schema::table('categories', function (Blueprint $table) {
                     $table->text('description')->nullable()->after('summary');
@@ -80,9 +80,9 @@ return Feature::make('category-descriptions')
             ->explain(<<<'TEXT'
                 Open `app/Models/Category.php`. Add `description` to `#[Fillable]`, and add a `@property string|null $description` line to the docblock.
 
-                Then add a `casts()` method that maps `description` to `SafeHtml::class`. `Page` and `Program` already do this. Copy the method from `Page`.
+                Then add a `casts()` method that maps `description` to `SafeHtml::class`. `Program` already does this for its description.
 
-                This one line is the security of the feature. The cast cleans the HTML each time the model sets the value: from the staff form, a seeder or tinker. You do not call the sanitizer in the controller, and you do not write a new allowlist. The list in `config/editor.php` applies to categories now, too.
+                This one line is the security of the feature. The cast cleans the HTML each time the model sets the value: from the staff form, a seeder or tinker. You do not call the sanitizer in the controller or in `CategoryService`, and you do not write a new allowlist. The list in `config/editor.php` applies to categories now, too.
                 TEXT)
             ->think('Staff add the `underline` format to `config/editor.php` next year. Which files change for categories? Why?')
             ->hint('`Category` has no `casts()` method yet. Add the whole method, with its docblock, under `use HasFactory;`.')
@@ -108,7 +108,7 @@ return Feature::make('category-descriptions')
             ->explain(<<<'TEXT'
                 Staff need a field for the description. Two files change.
 
-                In `app/Http/Requests/CategoryRequest.php`, add a rule for `description`: `nullable` and `string`. A form request passes on only the fields that have a rule. Without the rule, `$request->validated()` drops the description, and the save changes nothing. No error tells you why.
+                In `app/Http/Requests/CategoryRequest.php`, add a rule for `description`: `nullable` and `string`. A form request passes on only the fields that have a rule. Without the rule, `$request->validated()` drops the description, and the save changes nothing. No error tells you why. With the rule, the controller passes the description to `CategoryService` with the other fields, so the service does not change.
 
                 In `resources/views/admin/categories/form.blade.php`, add `<x-editor>` under the summary. Pass the name, a label and the old value. Tell staff where the text shows, so they know what to write.
 

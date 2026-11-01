@@ -3,12 +3,14 @@
 use App\Models\Ticket;
 use App\Models\TicketType;
 use App\Models\User;
+use Livewire\Livewire;
 
 /*
 | Acceptance test for the "Ticket check-in" feature.
 |
 | Staff at the door type the code of a ticket. A paid ticket is marked as used,
-| and the same ticket cannot get in twice.
+| and the same ticket cannot get in twice. The page works with a normal form
+| and, with Livewire, without a page load. Both front doors call TicketService.
 */
 
 test('only staff open the check-in page', function () {
@@ -67,4 +69,28 @@ test('staff can type the code in small letters with spaces', function () {
         ->assertSessionHasNoErrors();
 
     expect($ticket->fresh()->used_at)->not->toBeNull();
+});
+
+test('staff check in on the live page without a page load', function () {
+    $type = TicketType::factory()->create(['name' => 'BIG Night Out']);
+    $ticket = Ticket::factory()->for($type)->create(['code' => 'K7P2M9QX']);
+
+    Livewire::actingAs(User::factory()->staff()->create())
+        ->test('admin.check-in')
+        ->set('code', ' k7p2m9qx ')
+        ->call('check')
+        ->assertHasNoErrors()
+        ->assertSee('Checked in: BIG Night Out')
+        ->assertSet('code', '')
+        ->set('code', 'K7P2M9QX')
+        ->call('check')
+        ->assertHasErrors('code');
+
+    expect($ticket->fresh()->used_at)->not->toBeNull();
+});
+
+test('a person who is not staff cannot use the live check-in', function () {
+    Livewire::actingAs(User::factory()->create())
+        ->test('admin.check-in')
+        ->assertForbidden();
 });

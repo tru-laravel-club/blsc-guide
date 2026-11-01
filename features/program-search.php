@@ -34,7 +34,7 @@ return Feature::make('program-search')
 
         You build the search **twice**, on purpose. First the traditional way: a form sends `GET /admin/programs?search=robot`, and the controller filters the list. The whole page loads again, and the search lives in the address, so staff can bookmark it or send it to a colleague. Then the reactive way: a small Livewire component shows the results while staff type, with no page load.
 
-        Both ways use **the same backend**: one `search` scope on the `Program` model. The project rule is "controllers do HTTP, services do the work". A controller or a component receives the request, checks the user, calls the code that does the work, and returns a response. Work that changes data goes into a service class in `app/Services`. A search changes nothing. It is a query, so it lives on the model as a scope, next to `published()`. The controller and the component are two front doors to that one scope. When you change the search rule later, you change it in one place.
+        Both ways use **the same backend**: one `search` scope on the `Program` model. The project rule is "controllers do HTTP, services do the work" (see `/guide/services`). A controller or a component receives the request, checks the user, calls the code that does the work, and returns a response. Work that changes data goes into a service class in `app/Services`. A search changes nothing. It is a query, so it lives on the model as a scope, next to `published()`. The controller and the component are two front doors to that one scope. When you change the search rule later, you change it in one place.
 
         This is your first Livewire component, so the guide goes slowly. Each step adds one new idea. Read the guide page "The reactive way" before you start. Keep it open: the table "A Livewire component is a controller that stays on the page" maps each new idea to something that you already know.
         TEXT)
@@ -173,9 +173,7 @@ return Feature::make('program-search')
                     return view('admin.programs.index', [
                         'search' => $search,
                         'programs' => Program::search($search)
-                            ->with('category')
-                            ->withCount(['sessions', 'applications', 'inquiries as open_inquiries_count' => fn ($query) => $query->where('status', InquiryStatus::Open)])
-                            ->orderBy('name')
+                            // ... the rest of the query, as it was: with(), withCount() and orderBy() ...
                             ->get(),
                     ]);
                 }
@@ -292,8 +290,8 @@ return Feature::make('program-search')
                 The controller has nothing to filter now. `index()` returns `view('admin.programs.index')`, and the index page shows the status message, the New program button and the component. Remove the `Request` parameter and the imports that you do not use. Pint tells you about them.
                 TEXT)
             ->think('The computed property runs on every request. What would happen to the page if the program list were a public property instead?')
-            ->hint('`use Livewire\Attributes\Computed;` at the top of the file. Copy the import of `InquiryStatus` from the controller too.')
-            ->hint('The return type is `Collection<int, Program>` from `Illuminate\Database\Eloquent\Collection`, as in the form editor.')
+            ->hint('`use Livewire\Attributes\Computed;` and `use App\Models\Program;` at the top of the file. If the query in the controller uses other classes, import them too.')
+            ->hint('The return type is `Collection<int, Program>`. Import `Illuminate\Database\Eloquent\Collection`, not the support collection.')
             ->code(<<<'PHP'
                 /**
                  * The programs that match the search, with the numbers that the list shows.
@@ -304,16 +302,14 @@ return Feature::make('program-search')
                 public function programs(): Collection
                 {
                     return Program::search($this->search)
-                        ->with('category')
-                        ->withCount(['sessions', 'applications', 'inquiries as open_inquiries_count' => fn ($query) => $query->where('status', InquiryStatus::Open)])
-                        ->orderBy('name')
+                        // ... the same with(), withCount() and orderBy() as in the controller ...
                         ->get();
                 }
                 PHP)
             ->tryIt(<<<'TEXT'
                 Reload the program list and type "robot". The table changes while you type, with no page load.
 
-                Now run `php artisan test tests/Feature/ProgramSearchTest.php`. Three rules fail, such as "staff search the program list through the address". Open `/admin/programs?search=robot`: the list shows every program. The component does not read the address yet. The next step fixes it.
+                Now run `php artisan test tests/Feature/ProgramSearchTest.php`. Four rules fail. Three of them use the address, such as "staff search the program list through the address". The fourth is "a person who is not staff cannot use the search", and a later step fixes it. Open `/admin/programs?search=robot`: the list shows every program. The component does not read the address yet. The next step fixes it.
                 TEXT)
             ->commit('Show the search results in the component')
             ->docs('https://livewire.laravel.com/docs/4.x/computed-properties#basic-usage', 'Livewire docs: Computed properties')
@@ -357,7 +353,7 @@ return Feature::make('program-search')
                 - `mount()` runs once, when the page first shows the component.
                 - `boot()` runs on **every** request: the first one and each update.
 
-                A check in `mount()` protects only the first request. So add `boot()` and call `Gate::authorize('access-admin')` in it, as the form editor does. A user who is not staff then gets "403 Forbidden" on every request.
+                A check in `mount()` protects only the first request. So add `boot()` and call `Gate::authorize('access-admin')` in it. `access-admin` is the gate that the staff routes use. A user who is not staff then gets "403 Forbidden" on every request.
 
                 Livewire does help: for update requests, it runs the `auth` and `can` middleware of the page again. But the component must not depend on the page that holds it. A teammate can put it on another page next year. The component guards itself.
 

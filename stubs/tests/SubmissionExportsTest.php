@@ -5,6 +5,7 @@ use App\Models\Form;
 use App\Models\Submission;
 use App\Models\User;
 use App\Notifications\SubmissionReceived;
+use App\Services\FormService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\AnonymousNotifiable;
 use Illuminate\Support\Facades\Notification;
@@ -47,7 +48,7 @@ function exportRows(Form $form): array
 
     $lines = array_filter(explode("\n", trim($response->streamedContent())));
 
-    return array_values(array_map(str_getcsv(...), $lines));
+    return array_values(array_map(fn (string $line) => str_getcsv($line, escape: ''), $lines));
 }
 
 test('only staff can export submissions', function () {
@@ -64,13 +65,13 @@ test('the columns are the keys of every version, with the newest labels', functi
     $school = Field::factory()->create(['key' => 'school', 'label' => 'School']);
     $shoes = Field::factory()->create(['key' => 'shoe_size', 'label' => 'Shoe size']);
     $form = formForExport([$school, $shoes]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary', 'shoe_size' => '4']);
 
     $school->update(['label' => 'Name of your school']);
     $form->fields()->detach($shoes);
     $form->fields()->attach(Field::factory()->create(['key' => 'swims', 'label' => 'Can your child swim?']), ['position' => 1, 'required' => false]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Brock Middle', 'swims' => 'Yes']);
 
     $rows = exportRows($form);
@@ -85,7 +86,7 @@ test('sensitive fields are not in the export', function () {
         Field::factory()->create(['key' => 'school', 'label' => 'School']),
         Field::factory()->sensitive()->create(['key' => 'allergies', 'label' => 'Allergies']),
     ]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary', 'allergies' => 'Peanuts']);
 
     $rows = exportRows($form);
@@ -97,7 +98,7 @@ test('sensitive fields are not in the export', function () {
 
 test('the export shows the label of a choice, not its value', function () {
     $form = formForExport([Field::factory()->choice(['grade_1' => 'Grade 1', 'grade_2' => 'Grade 2'])->create(['key' => 'grade'])]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['grade' => 'grade_2']);
 
     expect(exportRows($form)[1])->toContain('Grade 2');
@@ -105,7 +106,7 @@ test('the export shows the label of a choice, not its value', function () {
 
 test('a spreadsheet does not run a formula from an answer', function () {
     $form = formForExport([Field::factory()->create(['key' => 'school'])]);
-    $form->publish();
+    app(FormService::class)->publish($form);
     $this->post(route('forms.store', $form), ['school' => '=HYPERLINK("https://example.com")']);
 
     expect(exportRows($form)[1][2])->toStartWith("'=");
@@ -114,7 +115,7 @@ test('a spreadsheet does not run a formula from an answer', function () {
 test('a new submission queues an email to the form address, without the answers', function () {
     Notification::fake();
     $form = formForExport([Field::factory()->create(['key' => 'school'])], 'camps@example.com');
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
 
@@ -136,7 +137,7 @@ test('a new submission queues an email to the form address, without the answers'
 test('a form without an email address sends no email', function () {
     Notification::fake();
     $form = formForExport([Field::factory()->create(['key' => 'school'])]);
-    $form->publish();
+    app(FormService::class)->publish($form);
 
     $this->post(route('forms.store', $form), ['school' => 'Westsyde Elementary']);
 

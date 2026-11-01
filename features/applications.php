@@ -9,9 +9,9 @@ return Feature::make('applications')
     ->title('Applications')
     ->section(Section::Signups)
     ->level(2)
-    ->needs(['signup-modes', 'submissions'])
+    ->needs(['signup-modes', 'category-pages', 'form-editor'])
     ->summary('Programs with the apply mode take applications, such as QUARKS. Staff accept or decline each one.')
-    ->teaches(['Status enums', 'Reusing validation', 'Scoped route bindings', 'The auth middleware', 'Nested resources', 'Queued notifications', 'Blade components'])
+    ->teaches(['Status enums', 'Service classes', 'Reusing validation', 'Database transactions', 'Scoped route bindings', 'The auth middleware', 'Nested resources', 'Queued notifications', 'Blade components', 'Named exceptions'])
     ->test('ApplicationsTest.php')
     ->intro(<<<'TEXT'
         Open a program with the `Apply` mode, such as QUARKS. The page says "Applications open soon", and nothing more. In this feature, you make that true: a student applies, staff decide, and the student learns the decision.
@@ -20,17 +20,22 @@ return Feature::make('applications')
 
         Staff open the list of applications for QUARKS. They read the answers of one application and click **Accept** or **Decline**. The app saves the decision, the time and the staff member. It queues an email to the student. The student also sees the status on the dashboard.
 
-        Notice what the application does not hold: the answers. The form holds the questions, and the submission holds the answers. You already built both. If QUARKS asks a new question next year, staff add it in the form editor. No code changes. So the main work here is to connect parts that exist, and to reuse them without a copy. The validation rules live in one place, `FormRules`. The application flow must use them, not write its own.
+        Notice what the application does not hold: the answers. The form holds the questions, and the submission holds the answers. You already built both. If QUARKS asks a new question next year, staff add it in the form editor. No code changes. So the main work here is to connect parts that exist, and to reuse them without a copy. The validation rules live in one place, `FormRules`. The answers are saved in one place, `FormSubmissionService`. The application flow uses both, and writes neither again.
+
+        The work goes in a new service, `ApplicationService`, as the rule of the app says: **controllers do HTTP, services do the work** (see `/guide/services`). It has two methods. `apply()` saves the answers and the application. `decide()` saves the decision and emails the applicant. The controllers validate, call one of the two, and redirect.
 
         The code never checks for "QUARKS". It checks the mode, `SignupMode::Apply`. Any program that staff set to `Apply`, with a form, takes applications.
+
+        One more rule protects the applicants. A program that people applied to must not disappear. `ProgramService` refuses to delete it, and staff see a message. Applications are the first kind of sign-up, and more kinds come later. So the rule asks one general question, `Program::hasSignups()`, and each new kind of sign-up adds one line to it.
         TEXT)
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/16', 'Laravel From Scratch, episode 16: Eloquent Relationships')
     ->docs('https://laravel.com/docs/notifications#queueing-notifications', 'Laravel docs: Queueing notifications')
     ->docs('https://laravel.com/docs/controllers#restful-nested-resources', 'Laravel docs: Nested resources')
+    ->docs('/guide/services', 'BLSC guide: Controllers and services')
     ->reflect([
         'QUARKS needs a reference letter next year. What changes? Which parts need a developer, and which parts can staff do alone?',
         'The application stores a `submission_id`, but no answers. Why is that better than columns such as `school` and `grade` on the `applications` table?',
-        'The `submit()` method on `FormVersion` saves answers for stand-alone forms and for applications. Name one bug that a second copy of that code could cause.',
+        '`FormSubmissionService::submit()` saves answers for stand-alone forms and for applications. Name one bug that a second copy of that code could cause.',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
     ])
     ->steps([
@@ -39,9 +44,11 @@ return Feature::make('applications')
             ->explain(<<<'TEXT'
                 You start with the test. Run the command below. It copies `tests/Feature/ApplicationsTest.php` into the app.
 
-                Read the whole test before you write code. It tells you the names that later features use: the `Application` model, the `ApplicationStatus` enum, the `ApplicationDecided` notification, and the routes `applications.create`, `applications.store`, `admin.programs.applications.index`, `admin.applications.show` and `admin.applications.update`.
+                Read the whole test before you write code. It tells you the names that later features use: the `Application` model, the `ApplicationStatus` enum, the `ApplicationDecided` notification, and the routes `applications.create`, `applications.store`, `admin.programs.applications.index`, `admin.applications.show` and `admin.applications.update`. The test does not call the service, but later features do. So keep its names too: `ApplicationService` with `apply()` and `decide()`.
 
                 Look at the helper `programTakingApplications()` at the top. A program takes applications only when three things are true: it is published, its mode is `apply`, and its form has a published version. Then look at the rule "only apply programs take applications". Its dataset tries each case that must be refused.
+
+                The last rule is for staff. A program with an application cannot be deleted. Staff go back to the page with an error, and nothing is deleted.
                 TEXT)
             ->think('The helper names the program "QUARKS", and the refused cases use the same helper. So what makes a program take applications, if not its name?')
             ->tryIt('Run `php artisan test tests/Feature/ApplicationsTest.php`. All the rules fail, because the `Application` model does not exist yet.')
@@ -124,7 +131,9 @@ return Feature::make('applications')
 
                 Add four `BelongsTo` relationships: `program()`, `user()`, `submission()` and `decider()`. The last one uses the `decided_by` column, so pass the column name as the second argument.
 
-                Put only `user_id` and `submission_id` in `#[Fillable]`. The status changes in one way only: through a `decide()` method that sets the status, the time and the staff member together. `decide()` uses `forceFill()`, because those columns are not fillable. Then no form can send `status` and skip the record of who decided.
+                Put only `user_id` and `submission_id` in `#[Fillable]`. The status, the time and the staff member change together, in one place: `ApplicationService::decide()`, which you write later. It uses `forceFill()`, because those columns are not fillable. Then no form can send `status` and skip the record of who decided.
+
+                The model only holds data: columns, casts and relationships. It has no method that saves a decision. A method that changes data belongs in a service (see `/guide/services`).
 
                 Add `applications(): HasMany` to `Program` and to `User`. Update the docblocks, so PHPStan knows the types.
 
@@ -134,26 +143,22 @@ return Feature::make('applications')
             ->hint('`$this->belongsTo(User::class, \'decided_by\')` reads the `decided_by` column instead of `decider_id`.')
             ->hint('In the factory, `Program::factory()->state([\'signup_mode\' => \'apply\'])` makes a program with the right mode.')
             ->code(<<<'PHP'
-                /**
-                 * The staff member who made the decision.
-                 *
-                 * @return BelongsTo<User, $this>
-                 */
-                public function decider(): BelongsTo
+                #[Fillable(['user_id', 'submission_id'])]
+                class Application extends Model
                 {
-                    return $this->belongsTo(User::class, 'decided_by');
-                }
+                    protected $attributes = [
+                        'status' => 'submitted',
+                    ];
 
-                /**
-                 * Accept or decline the application, and remember who decided and when.
-                 */
-                public function decide(ApplicationStatus $status, User $staff): void
-                {
-                    $this->forceFill([
-                        'status' => $status,
-                        'decided_at' => now(),
-                        'decided_by' => $staff->id,
-                    ])->save();
+                    /**
+                     * The staff member who made the decision.
+                     *
+                     * @return BelongsTo<User, $this>
+                     */
+                    public function decider(): BelongsTo
+                    {
+                        return $this->belongsTo(User::class, 'decided_by');
+                    }
                 }
                 PHP)
             ->tryIt('In `php artisan tinker`, run `App\Models\Application::factory()->create()->program->signup_mode`. You see the `Apply` case.')
@@ -161,54 +166,50 @@ return Feature::make('applications')
             ->docs('https://laravel.com/docs/eloquent-relationships#one-to-many-inverse', 'Laravel docs: One to many (inverse)')
             ->docs('https://laravel.com/docs/eloquent#mass-assignment', 'Laravel docs: Mass assignment')
             ->check(Check::all(
-                Check::fileContains('app/Models/Application.php', 'function decide'),
+                Check::fileContains('app/Models/Application.php', 'function decider'),
                 Check::fileContains('app/Models/Program.php', 'function applications'),
             )),
 
-        Step::make('Move the answer code into FormVersion')
+        Step::make('Save an application in a service')
+            ->run('php artisan make:class Services/ApplicationService')
             ->explain(<<<'TEXT'
-                Open `app/Http/Controllers/FormController.php`. Its `store()` method does three things: it validates the answers against the version, saves a submission, and emails staff. The application flow needs all three. Do not copy them. A copy drifts: one day someone fixes a bug in one copy and not in the other.
+                To apply is two writes: save the answers as a submission, then save the application that points to it. Put both in a new service, `ApplicationService`, with one method for now: `apply(Program $program, FormVersion $version, array $validated, User $user): Application`.
 
-                Move the code into `app/Models/FormVersion.php`, because each part needs the fields of a version:
+                Do not save the answers yourself. `FormSubmissionService::submit()` already does it for the public forms: it keeps one answer for each key of the version, saves the family answers to the profile, and sends the notice to `notify_email`. Ask for `FormSubmissionService` in the constructor of your service, and Laravel gives it to you. Then call `submit()` and create the application with the ID of the new submission.
 
-                - `rules()` returns `FormRules::for($this->fields)`.
-                - `labels()` returns the label of each field, keyed by field key. Laravel uses them in the error messages, such as "The School field is required."
-                - `submit(array $validated, ?User $user): Submission` saves the answers and sends the notice to `notify_email`.
+                Wrap the two writes in `DB::transaction()`. If the second write fails, the database also takes back the first one. Then no submission is left without its application.
 
-                Why not validate inside `submit()`? A later feature validates more than the form. The Requests feature also asks a guest for a name and an email. With `rules()` as a separate method, a controller adds its own rules to the form rules, and the visitor sees all the errors at once.
+                The service takes the version as a parameter, and does not look it up again. The controller validates the answers against one version. The service must save them for the same version, even if staff publish a new one at that moment.
 
-                Then change `FormController::store()` to use the three methods. Run the tests in `SubmissionsTest.php` and `SubmissionExportsTest.php`. They must still pass, because the behaviour did not change.
+                The service does not validate and does not check the mode of the program. That is the work of the controller, in a later step. The service trusts its input, as `FormService` does. See `/guide/services` for the rule.
                 TEXT)
-            ->think('Before, the notice to staff was in the controller. Now it is in `submit()`. Which new sign-ups get the notice with no extra code?')
-            ->hint('Cut the body of `store()` from `$validated` to the notification. Paste it into `submit()` and change `$version` to `$this`.')
-            ->hint('`array_column($this->fields, \'label\', \'key\')` gives `[\'school\' => \'School\', ...]`.')
+            ->think('Why is `apply()` not in `ApplicationController`? Name two other places that could call it later.')
+            ->hint('`public function __construct(private FormSubmissionService $submissions) {}` gives the service its helper. This is constructor injection, the same thing Laravel does for a controller.')
+            ->hint('`$program->applications()->create([...])` fills in `program_id` for you.')
             ->code(<<<'PHP'
-                public function submit(array $validated, ?User $user): Submission
+                class ApplicationService
                 {
-                    $submission = $this->submissions()->create([
-                        'user_id' => $user?->id,
-                        'answers' => collect($this->fields)->mapWithKeys(fn (array $field) => [
-                            $field['key'] => $validated[$field['key']] ?? null,
-                        ])->all(),
-                        'submitted_at' => now(),
-                    ]);
+                    public function __construct(private FormSubmissionService $submissions) {}
 
-                    if ($this->form->notify_email) {
-                        Notification::route('mail', $this->form->notify_email)->notify(new SubmissionReceived($submission));
+                    /**
+                     * Save the answers and the application together. The application waits for a decision.
+                     *
+                     * @param  array<string, mixed>  $validated  the answers, checked against this version
+                     */
+                    public function apply(Program $program, FormVersion $version, array $validated, User $user): Application
+                    {
+                        return DB::transaction(fn () => $program->applications()->create([
+                            'user_id' => $user->id,
+                            'submission_id' => $this->submissions->submit($version, $validated, $user)->id,
+                        ]));
                     }
-
-                    return $submission;
                 }
-
-                // FormController::store()
-                $validated = $request->validate($version->rules(), [], $version->labels());
-
-                $version->submit($validated, $request->user());
                 PHP)
-            ->tryIt('Run `php artisan test tests/Feature/SubmissionsTest.php tests/Feature/SubmissionExportsTest.php`. All the rules pass, as before your change.')
-            ->commit('Move submission code into FormVersion')
-            ->docs('https://laravel.com/docs/validation#customizing-the-validation-attributes', 'Laravel docs: Customizing the validation attributes')
-            ->check(Check::fileContains('app/Models/FormVersion.php', 'function submit')),
+            ->tryIt('In tinker, run `$program = App\Models\Program::factory()->create([\'signup_mode\' => \'apply\']); $version = App\Models\Form::firstWhere(\'slug\', \'contact\')->currentVersion; app(App\Services\ApplicationService::class)->apply($program, $version, [\'message\' => \'Hello\'], App\Models\User::first())->submission->answers`. You see every key of the contact form, with your message.')
+            ->commit('Save applications in ApplicationService')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/database#database-transactions', 'Laravel docs: Database transactions')
+            ->check(Check::fileContains('app/Services/ApplicationService.php', 'function apply')),
 
         Step::make('Find the form that a program takes sign-ups with')
             ->explain(<<<'TEXT'
@@ -248,24 +249,26 @@ return Feature::make('applications')
 
                 In the controller, both methods start with the same line: `$program->signupForm(SignupMode::Apply) ?? abort(404)`. A program with another mode has no apply page.
 
-                `create()` shows `resources/views/applications/create.blade.php`. It uses `<x-dynamic-form>` with the fields of the version. Set the `submit` attribute to "Send my application".
+                This check stays in the controller, and the answer is a 404 page. The question is "does this page exist?", as with a slug that matches no program. The controller also needs the version to show and to check the questions.
 
-                `store()` validates with `$version->rules()`, calls `$version->submit()`, and creates the application through `$program->applications()`. Then it sends the person to the dashboard with a status message.
+                `create()` shows `resources/views/applications/create.blade.php`. It uses `<x-dynamic-form>` with `$submissions->fields($version, $request->user())`, as the public `FormController` does. Then a family answer that the person gave before is filled in. Set the `submit` attribute to "Send my application".
+
+                `store()` validates as `FormController::store()` does: get the fields, then call `$request->validate()` with `FormRules::for($fields)`, `FormRules::messages()` and the labels. Then it calls `ApplicationService::apply()` and sends the person to the dashboard with a status message. The controller saves nothing itself.
+
+                Why does the controller validate, and not the service? Validation reads the request and sends the errors back to the page. That is HTTP work. The Requests feature also asks a guest for a name and an email. It adds its own rules to the form rules in the controller, and the visitor sees all the errors at once.
                 TEXT)
             ->think('The program page already checks the mode before it shows the button. Why must `store()` check it again?')
-            ->hint('Look at the `programs.show` route. Its parameters are `{category:slug}` and `{program:slug}`. Your controller methods take `Category $category, Program $program` in the same order.')
-            ->hint('`$version->submit($validated, $request->user())->id` saves the submission and gives you its ID for the application.')
+            ->hint('Look at the `programs.show` route. Its parameters are `{category:slug}` and `{program:slug}`. Your controller methods take `Category $category, Program $program` in the same order. Laravel gives the services after them.')
+            ->hint('`array_column($fields, \'label\', \'key\')` gives `[\'school\' => \'School\', ...]`. Laravel uses the labels in the error messages, such as "The School field is required."')
             ->code(<<<'PHP'
-                public function store(Request $request, Category $category, Program $program): RedirectResponse
+                public function store(Request $request, Category $category, Program $program, FormSubmissionService $submissions, ApplicationService $applications): RedirectResponse
                 {
                     $version = $program->signupForm(SignupMode::Apply) ?? abort(404);
+                    $fields = $submissions->fields($version, $request->user());
 
-                    $validated = $request->validate($version->rules(), [], $version->labels());
+                    $validated = $request->validate(FormRules::for($fields), FormRules::messages(), array_column($fields, 'label', 'key'));
 
-                    $program->applications()->create([
-                        'user_id' => $request->user()->id,
-                        'submission_id' => $version->submit($validated, $request->user())->id,
-                    ]);
+                    $applications->apply($program, $version, $validated, $request->user());
 
                     return to_route('dashboard')->with('status', "Your application to {$program->name} was sent. We will email you when staff decide.");
                 }
@@ -274,6 +277,7 @@ return Feature::make('applications')
             ->commit('Let people apply to a program')
             ->docs('https://laravel.com/docs/authentication#protecting-routes', 'Laravel docs: Protecting routes')
             ->docs('https://laravel.com/docs/routing#implicit-model-binding-scoping', 'Laravel docs: Scoped bindings')
+            ->docs('https://laravel.com/docs/validation#customizing-the-validation-attributes', 'Laravel docs: Customizing the validation attributes')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
             ->check(Check::route('applications.create', 'applications.store')),
 
@@ -294,7 +298,7 @@ return Feature::make('applications')
                         <slot:title>Applications are open</slot:title>
                         <slot:description class="space-y-3">
                             <p>Log in and answer a few questions. Staff read each application and email you their decision.</p>
-                            <april:button-link href="{{ route('applications.create', [$program->category, $program]) }}">Apply</april:button-link>
+                            <april:button-link href="{{ route('applications.create', [$program->category, $program]) }}" wire:navigate>Apply</april:button-link>
                         </slot:description>
                     </april:alert>
                 @else
@@ -315,15 +319,19 @@ return Feature::make('applications')
             ->explain(<<<'TEXT'
                 On your machine, QUARKS has the `apply` mode but no form. So the Apply button never shows. Staff fix that on the live site with the form editor. On a fresh development database, a seeder does it, so every contributor sees the feature at once.
 
-                In `SignupFormSeeder`, add a field `why_quarks` ("Why do you want to join QUARKS?") to the library. Create a form "QUARKS application" with the fields `school`, `grade` and `why_quarks`. Publish it if it has no version yet. Then set `form_id` on the program with the slug `quarks`.
+                In `SignupFormSeeder`, add a field `why_quarks` ("Why do you want to join QUARKS?", a long text in the `signup` scope) to the library. Create a form "QUARKS application" with the fields `school` and `why_quarks`, both required. Do not use `grade`: its choices stop at Grade 7, and QUARKS is for Grade 8 and 9. Publish the form if it has no version yet. Then set `form_id` on the program with the slug `quarks`.
 
                 Write the steps in a private method, such as `programForm(string $programSlug, array $details, array $keys)`. The Requests feature seeds a second form with the same method.
 
                 Call the new seeder at the end of `DatabaseSeeder`, after `FormSeeder`, because it uses the fields from the library.
                 TEXT)
             ->think('The seeder finds QUARKS by its slug. Is that the same as code that branches on a category name? Why or why not?')
-            ->hint('Copy the end of `FormSeeder`: `updateOrCreate()`, `fields()->sync()`, and `publish()` when `currentVersion` is `null`.')
+            ->hint('Copy the end of `FormSeeder`: `updateOrCreate()`, `fields()->sync()`, and `FormService::publish()` when `currentVersion` is `null`.')
             ->code(<<<'PHP'
+                /**
+                 * @param  array<string, string>  $details
+                 * @param  array<int, string>  $keys
+                 */
                 private function programForm(string $programSlug, array $details, array $keys): void
                 {
                     $form = Form::updateOrCreate(['slug' => str($details['name'])->slug()->toString()], $details);
@@ -337,7 +345,7 @@ return Feature::make('applications')
                     );
 
                     if ($form->currentVersion === null) {
-                        $form->publish();
+                        app(FormService::class)->publish($form);
                     }
 
                     Program::where('slug', $programSlug)->update(['form_id' => $form->id]);
@@ -346,7 +354,7 @@ return Feature::make('applications')
             ->tryIt(<<<'TEXT'
                 Run `php artisan migrate:fresh --seed` and `composer dev`. Open http://localhost:8000/programs/quarks/quarks. The box says "Applications are open". Click Apply. The login page opens.
 
-                Log in as `test@example.com` with the password `password`. You land on the apply page with three questions. Send it with an empty answer: the page shows an error with the label of the field. Fill in all three and send. The dashboard shows "Your application to QUARKS was sent".
+                Log in as `test@example.com` with the password `password`. You land on the apply page with two questions. Send it with an empty answer: the page shows an error with the label of the field. Fill in both and send. You land on the dashboard. It does not show the status message yet. You add it in the dashboard step.
                 TEXT)
             ->commit('Seed the QUARKS application form')
             ->docs('https://laravel.com/docs/seeding#writing-seeders', 'Laravel docs: Writing seeders')
@@ -355,19 +363,21 @@ return Feature::make('applications')
         Step::make('Show the applications to staff')
             ->run('php artisan make:controller Admin/ApplicationController')
             ->explain(<<<'TEXT'
-                Staff look at applications one program at a time. Use a nested resource, as for the submissions of a form: `Route::resource('programs.applications', Admin\ApplicationController::class)->shallow()->only(['index', 'show', 'update'])`. The list is under the program, and one application has a short URL.
+                Staff look at applications one program at a time. Use a nested resource, as for the submissions of a form: `Route::resource('programs.applications', Admin\ApplicationController::class)->shallow()->only(['index', 'show'])`. The list is under the program, and one application has a short URL. The next steps add `update`.
 
                 `index()` lists the applications of the program, newest first, with the user, the email and a status badge. Paginate it.
 
                 `show()` shows who applied, when, the status, and the answers. The answers look exactly like the staff page of a submission. So move that `<dl>` from `resources/views/admin/submissions/show.blade.php` into a component, `resources/views/components/admin/answers.blade.php`, with one prop: `submission`. Then both pages use `<x-admin.answers :submission="..." />`. The Requests feature uses it too.
 
-                Last, help staff find the list. In the program list of the admin, add a "Sign-ups" column. For an `Apply` program, link to its applications with a count.
+                These pages only read data, so they need no service.
+
+                Last, help staff find the list. The staff program list is the `admin.program-list` Livewire component from "Search the program list". Add a "Sign-ups" column to it. For an `Apply` program, link to its applications with a count.
                 TEXT)
             ->think('The answers component reads `$submission->version->fields`. Why must it not read the fields of the program\'s form?')
             ->hint('An anonymous component starts with `@props([\'submission\'])`. Copy the `<dl>` below it.')
-            ->hint('In `Admin\ProgramController::index()`, change `withCount(\'sessions\')` to `withCount([\'sessions\', \'applications\'])`. The view reads `$program->applications_count`.')
+            ->hint('In `programs()` of `resources/views/components/admin/⚡program-list.blade.php`, change `withCount(\'sessions\')` to `withCount([\'sessions\', \'applications\'])`. The view reads `$program->applications_count`.')
             ->code(<<<'PHP'
-                Route::resource('programs.applications', Admin\ApplicationController::class)->shallow()->only(['index', 'show', 'update']);
+                Route::resource('programs.applications', Admin\ApplicationController::class)->shallow()->only(['index', 'show']);
 
                 public function index(Program $program): View
                 {
@@ -384,7 +394,7 @@ return Feature::make('applications')
                     ]);
                 }
                 PHP)
-            ->tryIt('Log in as `staff@example.com`. Open Programs. The QUARKS row shows "Applications (1)". Click it, then open the application. You see the three questions and your answers.')
+            ->tryIt('Log in as `staff@example.com`. Open Programs. The QUARKS row shows "Applications (1)". Click it, then open the application. You see the two questions and your answers.')
             ->commit('Show applications to staff')
             ->docs('https://laravel.com/docs/controllers#shallow-nesting', 'Laravel docs: Shallow nesting')
             ->docs('https://laravel.com/docs/blade#anonymous-components', 'Laravel docs: Anonymous components')
@@ -393,45 +403,76 @@ return Feature::make('applications')
                 Check::view('components.admin.answers'),
             )),
 
-        Step::make('Accept or decline, and email the applicant')
+        Step::make('Save the decision and email the applicant')
             ->run('php artisan make:notification ApplicationDecided')
             ->explain(<<<'TEXT'
+                A decision is three values that change together: the status, the time and the staff member. After the save, the applicant gets an email. Put all of it in a second method of `ApplicationService`: `decide(Application $application, ApplicationStatus $status, User $staff): void`.
+
+                Use `forceFill()`, because `status`, `decided_at` and `decided_by` are not fillable. This method is the only place in the app that sets them.
+
+                Then send the email. Run the command below. It makes `app/Notifications/ApplicationDecided.php`. Give it the application in the constructor. It implements `ShouldQueue`, as `SubmissionReceived` does. The decision saves at once. The email goes out a moment later, from the queue worker. Its text uses `status->label()`, so one notification serves both decisions. Send it with `$application->user->notify(...)`: the `User` model has the `Notifiable` trait, so the email goes to the user's address.
+
+                Like `apply()`, `decide()` trusts its input. The staff page validates the status in the next step.
+                TEXT)
+            ->think('Why does `decide()` send the email, and not the controller? Think of a later page or command that also decides.')
+            ->hint('`$application->forceFill([\'status\' => $status, \'decided_at\' => now(), \'decided_by\' => $staff->id])->save()` saves the three values together.')
+            ->hint('In `toMail()`, `strtolower($this->application->status->label())` gives "accepted" for the sentence "Your application to QUARKS was accepted."')
+            ->code(<<<'PHP'
+                /**
+                 * Accept or decline the application, remember who decided and when, and email the applicant.
+                 */
+                public function decide(Application $application, ApplicationStatus $status, User $staff): void
+                {
+                    $application->forceFill([
+                        'status' => $status,
+                        'decided_at' => now(),
+                        'decided_by' => $staff->id,
+                    ])->save();
+
+                    $application->user->notify(new ApplicationDecided($application));
+                }
+                PHP)
+            ->tryIt('In tinker, run `$application = App\Models\Application::first(); app(App\Services\ApplicationService::class)->decide($application, App\Enums\ApplicationStatus::Accepted, App\Models\User::firstWhere(\'email\', \'staff@example.com\')); $application->fresh()->status`. You see the `Accepted` case. Run `php artisan queue:work --stop-when-empty`. The app writes email to the log on your machine. Open `storage/logs/laravel.log` and search for "Your application to QUARKS was accepted".')
+            ->commit('Decide applications in ApplicationService')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/notifications#queueing-notifications', 'Laravel docs: Queueing notifications')
+            ->docs('https://laravel.com/docs/notifications#formatting-mail-messages', 'Laravel docs: Formatting mail messages')
+            ->check(Check::all(
+                Check::fileContains('app/Services/ApplicationService.php', 'function decide'),
+                Check::fileExists('app/Notifications/ApplicationDecided.php'),
+            )),
+
+        Step::make('Let staff accept or decline')
+            ->explain(<<<'TEXT'
+                Add `update` to the staff route: `->only(['index', 'show', 'update'])`.
+
                 On the show page, add one form with two submit buttons: **Accept** with `name="status" value="accepted"`, and **Decline** with `value="declined"`. The browser sends the value of the button that staff click. Use `@method('PATCH')`, because the form changes the application.
 
-                In `update()`, validate `status`. `Rule::enum(ApplicationStatus::class)` accepts every case, but staff must not set an application back to `submitted`. Add `->only([...])` with the two decisions. Then call `decide()` and notify the applicant.
-
-                `ApplicationDecided` implements `ShouldQueue`, as `SubmissionReceived` does. The decision saves at once. The email goes out a moment later, from the queue worker. Its text uses `status->label()`, so one notification serves both decisions. Send it with `$application->user->notify(...)`: the `User` model has the `Notifiable` trait, so the email goes to the user's address.
+                In `update()`, validate `status`. `Rule::enum(ApplicationStatus::class)` accepts every case, but staff must not set an application back to `submitted`. Add `->only([...])` with the two decisions. Then call `ApplicationService::decide()` and redirect back to the application with a status message. The controller saves nothing and sends no email itself.
                 TEXT)
             ->think('The email is queued. Staff click Accept, and the mail server is slow. What does the staff member see? What would they see without the queue?')
             ->hint('`Rule::enum(ApplicationStatus::class)->only([ApplicationStatus::Accepted, ApplicationStatus::Declined])` refuses `submitted` and every unknown value.')
-            ->hint('In `toMail()`, `strtolower($this->application->status->label())` gives "accepted" for the sentence "Your application to QUARKS was accepted."')
+            ->hint('`$request->user()` is the staff member who clicked.')
             ->code(<<<'PHP'
-                public function update(Request $request, Application $application): RedirectResponse
+                public function update(Request $request, Application $application, ApplicationService $applications): RedirectResponse
                 {
                     $validated = $request->validate([
                         'status' => ['required', Rule::enum(ApplicationStatus::class)->only([ApplicationStatus::Accepted, ApplicationStatus::Declined])],
                     ]);
 
-                    $application->decide(ApplicationStatus::from($validated['status']), $request->user());
-
-                    $application->user->notify(new ApplicationDecided($application));
+                    $applications->decide($application, ApplicationStatus::from($validated['status']), $request->user());
 
                     return to_route('admin.applications.show', $application)->with('status', 'Decision saved. The applicant gets an email.');
                 }
                 PHP)
             ->tryIt(<<<'TEXT'
-                As staff, open your application and click Accept. The badge says "Accepted", and the page shows who decided.
+                As staff, open an application and click Decline. The badge says "Declined", and the page shows who decided.
 
-                `composer dev` runs a queue worker, so the email goes out a moment later. Its output shows `ApplicationDecided ... DONE`. Without `composer dev`, run `php artisan queue:work --stop-when-empty`. The app writes email to the log on your machine. Open `storage/logs/laravel.log` and search for "Your application to QUARKS was accepted".
+                `composer dev` runs a queue worker, so the email goes out a moment later. Its output shows `ApplicationDecided ... DONE`. Open `storage/logs/laravel.log` and search for "was declined".
                 TEXT)
             ->commit('Accept or decline applications')
             ->docs('https://laravel.com/docs/validation#rule-enum', 'Laravel docs: The enum rule')
-            ->docs('https://laravel.com/docs/notifications#queueing-notifications', 'Laravel docs: Queueing notifications')
-            ->docs('https://laravel.com/docs/notifications#formatting-mail-messages', 'Laravel docs: Formatting mail messages')
-            ->check(Check::all(
-                Check::route('admin.applications.update'),
-                Check::classExists('App\Notifications\ApplicationDecided'),
-            )),
+            ->check(Check::route('admin.applications.update')),
 
         Step::make('Show the status on the dashboard')
             ->run('php artisan make:controller DashboardController --invokable')
@@ -441,6 +482,10 @@ return Feature::make('applications')
                 Load the applications of the person who is logged in: `$request->user()->applications()`. Never load them by an ID from the URL. Then nobody can see another person's applications, and you need no policy.
 
                 In `dashboard.blade.php`, add a card "My applications" above the placeholders. Show it only when there are applications. Each row shows the program, the date, and the status badge.
+
+                The apply page sends people here with a status message, but the dashboard does not show it yet. Add `<x-admin.status />` at the top, as the staff pages do.
+
+                The dashboard only reads data, so it needs no service.
                 TEXT)
             ->think('The dashboard loads `with(\'program.category\')`. Which link needs the category? How many queries does the page make without it?')
             ->hint('`@if ($applications->isNotEmpty())` hides the card for a person with no applications.')
@@ -458,12 +503,66 @@ return Feature::make('applications')
             ->docs('https://laravel.com/docs/eloquent-relationships#nested-eager-loading', 'Laravel docs: Nested eager loading')
             ->check(Check::fileContains('routes/web.php', 'DashboardController')),
 
+        Step::make('Keep programs that people applied to')
+            ->run('php artisan make:exception ProgramHasSignups')
+            ->explain(<<<'TEXT'
+                Staff can delete a program on its edit page. Now try it with QUARKS, which has your application. The `applications` migration restricts the delete, so the database refuses, and staff see an error page. The rule is right: the application points to the program, and to the answers of a person. But an error page does not tell staff what to do. So the code must refuse first, and say why. A refusal is a business rule, so it belongs in the service, with a named exception and a message (see `/guide/services`).
+
+                Build for change. Applications are the first kind of sign-up. Requests and registrations come in later features, and each one keeps its program too. Do not write one exception for each kind. Write one question on the model, `Program::hasSignups(): bool`, and one exception, `ProgramHasSignups`. Today `hasSignups()` asks only about applications. Each later feature adds one line to it, and the service and the controller do not change. `hasSignups()` only reads, so it belongs on the model.
+
+                Give the exception the message "People signed up for this program. Keep it, so their sign-ups stay complete. You can unpublish it instead." In `ProgramService::delete()`, throw it when `$program->hasSignups()` is true.
+
+                Then catch the exception in `Admin\ProgramController::destroy()`, as `Admin\CategoryController::destroy()` catches `CategoryHasPrograms`. Go back with a `program` error. Show the error next to the delete button, with `@error('program')` on `admin/programs/edit.blade.php`.
+                TEXT)
+            ->think('The database already refuses the delete. Why check the rule in the service too? What does each check give you?')
+            ->hint('`$this->applications()->exists()` asks the database one yes-or-no question. It loads no applications.')
+            ->hint('Look at `CategoryService::delete()`. It throws `CategoryHasPrograms` in the same way.')
+            ->code(<<<'PHP'
+                // app/Models/Program.php
+                /**
+                 * Whether anybody signed up for the program. Each kind of sign-up keeps the program.
+                 */
+                public function hasSignups(): bool
+                {
+                    return $this->applications()->exists();
+                }
+
+                // app/Services/ProgramService.php
+                /**
+                 * @throws ProgramHasSignups when people signed up for the program
+                 */
+                public function delete(Program $program): void
+                {
+                    if ($program->hasSignups()) {
+                        throw new ProgramHasSignups;
+                    }
+
+                    $program->delete();
+                }
+
+                // app/Http/Controllers/Admin/ProgramController.php
+                try {
+                    $programs->delete($program);
+                } catch (ProgramHasSignups $exception) {
+                    return back()->withErrors(['program' => $exception->getMessage()]);
+                }
+                PHP)
+            ->tryIt('Run `php artisan test --filter="cannot delete a program"`. The rule passes. Log in as `staff@example.com`, edit QUARKS and click "Delete program". You see the message, and QUARKS stays. Then run `php artisan test tests/Feature/Admin/ProgramManagementTest.php`. Staff can still delete a program that nobody signed up for.')
+            ->commit('Keep programs with applications')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/queries#determining-if-records-exist', 'Laravel docs: Determining if records exist')
+            ->check(Check::all(
+                Check::fileContains('app/Models/Program.php', 'function hasSignups'),
+                Check::fileContains('app/Services/ProgramService.php', 'ProgramHasSignups'),
+                Check::fileContains('app/Http/Controllers/Admin/ProgramController.php', 'ProgramHasSignups'),
+            )),
+
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify applications')
             ->explain(<<<'TEXT'
                 Run the acceptance test with `guide:verify`. Then run `composer ci:check`. It runs Pint, PHPStan and every test, as GitHub does on your pull request.
 
-                The old tests matter here. You moved code out of `FormController` and changed the dashboard route. `SubmissionsTest`, `SubmissionExportsTest` and `DashboardTest` prove that nothing broke.
+                The old tests matter here. You moved the answers of the submission page into a component, added a column to the staff program list, changed the dashboard route, and changed `ProgramService::delete()`. `SubmissionsTest`, `ProgramSearchTest`, `DashboardTest` and `Admin/ProgramManagementTest` prove that nothing broke.
 
                 In your pull request, tell reviewers to run `php artisan migrate`, and `php artisan db:seed --class=SignupFormSeeder` to get the QUARKS form.
                 TEXT)

@@ -24,7 +24,7 @@ return Feature::make('cover-images')
 
         1. Staff choose an image and write alt text in the page form.
         2. `PageRequest` checks the file: an image, at most 2 MB, and alt text with it.
-        3. The controller stores the file on the uploads disk and saves its path in `cover_path`. It deletes the old file, if there is one.
+        3. The controller gives the valid data to `PageService`. The service stores the file on the uploads disk and saves its path in `cover_path`. It deletes the old file, if there is one.
         4. `Page::coverUrl()` asks the disk for the address of the file, and the views show it.
         TEXT)
     ->docs('https://laravel.com/docs/filesystem#configuration', 'Laravel docs: Filesystem configuration')
@@ -47,7 +47,7 @@ return Feature::make('cover-images')
 
                 Look at `fakeCover()`. It makes a tiny PNG from a fixed string. `UploadedFile::fake()->image()` can make images too, but it needs the GD extension of PHP, and not every machine has it.
 
-                Then read "the file goes on the disk named in the config". It changes the config to a disk called `cloud-uploads`, and checks that the `public` disk stays empty. A controller that writes `'public'` in the code fails this rule.
+                Then read "the file goes on the disk named in the config". It changes the config to a disk called `cloud-uploads`, and checks that the `public` disk stays empty. Code that writes `'public'` in the service fails this rule.
                 TEXT)
             ->think('The test never opens the `public` folder or `storage/app`. How can it check that a file was deleted?')
             ->tryIt('Run `php artisan test tests/Feature/CoverImagesTest.php`. Most rules fail, because the pages table has no cover columns yet.')
@@ -104,7 +104,7 @@ return Feature::make('cover-images')
 
         Step::make('Ask the disk for the cover address')
             ->explain(<<<'TEXT'
-                Open `app/Models/Page.php`. Add `cover_alt` to `#[Fillable]`. Do not add `cover_path`. Only the controller sets it, after it stores a file. A changed form must not point a page at any file on the disk.
+                Open `app/Models/Page.php`. Add `cover_alt` to `#[Fillable]`. Do not add `cover_path`. Only `PageService` sets it, after it stores a file. A changed form must not point a page at any file on the disk.
 
                 Add `@property string|null` lines for both columns to the docblock.
 
@@ -158,34 +158,43 @@ return Feature::make('cover-images')
 
         Step::make('Store, replace and remove the file')
             ->explain(<<<'TEXT'
-                Open `Admin\PageController`. `store()` and `update()` now do the same work, so move it into one private method, `save(PageRequest $request, Page $page)`.
+                Where does the upload code go? Not in the controller. Remember the rule from `/guide/services`: controllers do HTTP, services do the work. `PageService` is the one place where a page is saved, so the file work goes there too.
 
-                Do the work in this order:
+                Look at `Admin\PageController` first. It passes `$request->validated()` to the service. Now that `cover` is in the rules, `validated()` includes the uploaded file. So the controller does not change at all.
+
+                Open `app/Services/PageService.php`. `create()` and `update()` now do the same work, so move it into one private method, `save(Page $page, array $data): Page`. `create()` returns `$this->save(new Page, $data)`. `update()` calls it with the page and still returns nothing. Do the work in this order:
 
                 1. Remember the old path.
-                2. Fill the fields without `cover` and `remove_cover`: `$request->safe()->except([...])`.
-                3. If there is a new file, store it with `$request->file('cover')->store('covers', $disk)`. Laravel gives it a random name, so two files called `photo.jpg` do not clash. If staff ticked "remove", set the path to `null`. With no image, clear the alt text too.
+                2. Fill the fields without `cover` and `remove_cover`: `Arr::except($data, [...])`.
+                3. If `$data['cover']` is an uploaded file, store it with `->store('covers', $disk)`. Laravel gives it a random name, so two files called `photo.jpg` do not clash. If staff ticked "remove", set the path to `null`. With no image, clear the alt text too.
                 4. Save the page.
                 5. If the path changed, delete the old file.
 
                 The order is important. If the save fails, the old file must still be there, because the page still points at it.
 
-                Also change `destroy()`: after it deletes the page, it deletes the cover file. Otherwise the disk keeps files that nothing uses, and the centre pays to store them.
+                Also change `delete()`: after it deletes the page, it deletes the cover file. Otherwise the disk keeps files that nothing uses, and the centre pays to store them.
                 TEXT)
             ->think('`store()` returns the path, such as `covers/x7Kq2.png`. Why does Laravel choose the file name, and not the staff member?')
             ->hint('`config()->string(\'filesystems.uploads\')` gives the name of the disk. Pass it as the second argument of `store()`.')
+            ->hint('`$data[\'cover\'] ?? null` is an `UploadedFile` or `null`. Check it with `instanceof UploadedFile`, so PHPStan knows that it has a `store()` method.')
             ->hint('`Storage::disk($disk)->delete($oldCover)` deletes one file.')
             ->code(<<<'PHP'
-                private function save(PageRequest $request, Page $page): void
+                /**
+                 * Save the fields and the cover image. Delete the old cover file after the save.
+                 *
+                 * @param  array<string, mixed>  $data
+                 */
+                private function save(Page $page, array $data): Page
                 {
                     $disk = config()->string('filesystems.uploads');
                     $oldCover = $page->cover_path;
+                    $cover = $data['cover'] ?? null;
 
-                    $page->fill($request->safe()->except(['cover', 'remove_cover']));
+                    $page->fill(Arr::except($data, ['cover', 'remove_cover']));
 
-                    if ($request->hasFile('cover')) {
-                        $page->cover_path = $request->file('cover')->store('covers', $disk) ?: null;
-                    } elseif ($request->boolean('remove_cover')) {
+                    if ($cover instanceof UploadedFile) {
+                        $page->cover_path = $cover->store('covers', $disk) ?: null;
+                    } elseif (! empty($data['remove_cover'])) {
                         $page->cover_path = null;
                     }
 
@@ -198,6 +207,8 @@ return Feature::make('cover-images')
                     if ($oldCover !== null && $oldCover !== $page->cover_path) {
                         Storage::disk($disk)->delete($oldCover);
                     }
+
+                    return $page;
                 }
                 PHP)
             ->tryIt('Run `php artisan test tests/Feature/CoverImagesTest.php --filter="replaces|remove|deleting"`. The three rules pass.')
@@ -205,7 +216,7 @@ return Feature::make('cover-images')
             ->docs('https://laravel.com/docs/filesystem#storing-files', 'Laravel docs: Storing files')
             ->docs('https://laravel.com/docs/filesystem#deleting-files', 'Laravel docs: Deleting files')
             ->docs('https://laravel.com/docs/requests#storing-uploaded-files', 'Laravel docs: Storing uploaded files')
-            ->check(Check::fileContains('app/Http/Controllers/Admin/PageController.php', 'filesystems.uploads')),
+            ->check(Check::fileContains('app/Services/PageService.php', 'filesystems.uploads')),
 
         Step::make('Add the upload field to the form')
             ->explain(<<<'TEXT'

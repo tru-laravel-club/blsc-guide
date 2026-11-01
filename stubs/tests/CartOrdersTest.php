@@ -1,12 +1,14 @@
 <?php
 
-use App\Cart;
+use App\Contracts\Fulfiller;
 use App\Contracts\Purchasable;
 use App\Enums\OrderStatus;
 use App\Events\OrderPaid;
 use App\Events\PaymentSucceeded;
 use App\Models\Order;
 use App\Models\User;
+use App\Services\CartService;
+use App\Services\PaymentService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Event;
@@ -18,7 +20,8 @@ use Illuminate\Support\Facades\URL;
 |
 | Families put several things in one cart and pay once. The cart does not know
 | what it sells: anything that implements Purchasable can go in it. The test
-| uses its own small purchasable, CartTestItem, so it needs no other feature.
+| uses its own small purchasable, CartTestItem, and its own Fulfiller, so it
+| needs no other feature.
 */
 
 class CartTestItem extends Model implements Purchasable
@@ -37,14 +40,27 @@ class CartTestItem extends Model implements Purchasable
         return $this->price_cents;
     }
 
-    public function fulfil(): void
-    {
-        $this->increment('times_fulfilled');
-    }
-
     public function confirmationLine(): string
     {
         return $this->name.' is ready.';
+    }
+
+    public function fulfiller(): string
+    {
+        return CartTestFulfiller::class;
+    }
+}
+
+/**
+ * Gives the family what they paid for. Here it only counts how often it ran.
+ */
+class CartTestFulfiller implements Fulfiller
+{
+    public function fulfil(Purchasable $item): void
+    {
+        if ($item instanceof CartTestItem) {
+            $item->increment('times_fulfilled');
+        }
     }
 }
 
@@ -62,8 +78,8 @@ beforeEach(function () {
     $this->kit = CartTestItem::create(['name' => 'Robot kit', 'price_cents' => 2500]);
     $this->ticket = CartTestItem::create(['name' => 'Admission ticket', 'price_cents' => 1500]);
 
-    app(Cart::class)->add($this->kit);
-    app(Cart::class)->add($this->ticket);
+    app(CartService::class)->add($this->kit);
+    app(CartService::class)->add($this->ticket);
 });
 
 test('a visitor sees each item in the cart and the total', function () {
@@ -73,12 +89,12 @@ test('a visitor sees each item in the cart and the total', function () {
 });
 
 test('a visitor removes an item from the cart', function () {
-    $key = app(Cart::class)->items()->keys()->first();
+    $key = app(CartService::class)->items()->keys()->first();
 
     $this->delete(route('cart.remove', $key))->assertRedirect(route('cart.show'));
 
-    expect(app(Cart::class)->items())->toHaveCount(1)
-        ->and(app(Cart::class)->total(null))->toBe(1500);
+    expect(app(CartService::class)->items())->toHaveCount(1)
+        ->and(app(CartService::class)->total(null))->toBe(1500);
 });
 
 test('a guest checks out with an email and goes to the payment', function () {
@@ -96,7 +112,7 @@ test('a guest checks out with an email and goes to the payment', function () {
         ->and($order->items->pluck('description')->all())->toBe(['Robot kit', 'Admission ticket'])
         ->and($payment->amount_cents)->toBe(4000)
         ->and($payment->user_id)->toBeNull()
-        ->and(app(Cart::class)->items())->toBeEmpty();
+        ->and(app(CartService::class)->items())->toBeEmpty();
 });
 
 test('a guest must give an email to check out', function () {
@@ -117,7 +133,7 @@ test('a signed-in parent checks out with the email of their account', function (
 });
 
 test('an empty cart cannot check out', function () {
-    app(Cart::class)->clear();
+    app(CartService::class)->clear();
 
     $this->post(route('checkout.store'), ['email' => 'parent@example.com'])
         ->assertRedirect(route('cart.show'))
@@ -172,6 +188,24 @@ test('an order is fulfilled only once', function () {
     PaymentSucceeded::dispatch($payment);
 
     expect($this->kit->fresh()->times_fulfilled)->toBe(1);
+});
+
+test('two completions of the same payment at once fulfil the order once', function () {
+    Event::fake([OrderPaid::class]);
+    $this->post(route('checkout.store'), ['email' => 'parent@example.com']);
+    $payment = Order::sole()->payment;
+
+    // A double-click: two requests load the payment at the same moment, and both copies say "pending".
+    $first = $payment->fresh();
+    $second = $payment->fresh();
+    request()->merge(['fake_result' => 'approve']);
+
+    app(PaymentService::class)->complete($first);
+    app(PaymentService::class)->complete($second);
+
+    expect($this->kit->fresh()->times_fulfilled)->toBe(1)
+        ->and($this->ticket->fresh()->times_fulfilled)->toBe(1);
+    Event::assertDispatchedTimes(OrderPaid::class, 1);
 });
 
 test('the order page needs its signed link and shows each item', function () {

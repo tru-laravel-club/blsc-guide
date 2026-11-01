@@ -11,18 +11,20 @@ return Feature::make('form-editor')
     ->level(3)
     ->needs(['submissions', 'programs-admin', 'program-search'])
     ->summary('Staff add, order and archive fields, then publish a new version of the form.')
-    ->teaches(['Livewire components', 'Lifecycle hooks', 'Computed properties', 'wire:sort', 'Updating pivot rows', 'Closure validation rules', 'JSON where clauses'])
+    ->teaches(['Livewire components', 'Lifecycle hooks', 'Computed properties', 'Service classes', 'wire:sort', 'Updating pivot rows', 'Named exceptions', 'JSON where clauses'])
     ->test('FormEditorTest.php')
     ->intro(<<<'TEXT'
         Staff can build the field library, and a form can publish versions. But staff still need tinker to put fields in a form or to publish. In this feature, you give them a form editor.
 
         Staff create a form with a name, a web address and an email for notices. Then the edit page shows the **questions**: the fields of the form, in order. Staff add a field from the library, drag the fields into a new order, tick "Required", and remove a field. Each click changes the draft in the `form_field` table at once. Nothing changes for visitors.
 
-        The page shows "Unpublished changes" while the draft differs from the latest version. Staff click Publish when they are ready. That calls `Form::publish()` from the last feature.
+        The page shows "Unpublished changes" while the draft differs from the latest version. Staff click Publish when they are ready. That calls `FormService::publish()` from the "Submissions and versions" feature.
 
         The questions part uses **Livewire**. Each click runs a PHP method on the server, and Livewire updates the page without a full reload. Livewire is a good fit for a page with many small changes: staff must see each change at once, and a page load after every click is slow. The details of the form are a plain HTML form, as in the other staff pages.
 
         You built your first component in "Search the program list". Open `resources/views/components/admin/⚡program-list.blade.php` next to this guide. The form editor uses the same parts: one file with a PHP class at the top and Blade below, a gate check in `boot()`, a public property bound with `wire:model`, and a `#[Computed]` list. Three ideas are new here, and the steps introduce them one at a time: **methods that a button calls** with `wire:click`, a **model property** that the tag passes in, and **wire:sort** for drag and drop.
+
+        Remember the project rule from the intro of "Search the program list": **controllers do HTTP, services do the work**. A Livewire component counts as a controller. The program list only read data, so a scope on `Program` was enough. The form editor changes data on every click. So each method of the component checks the input and calls `FormService`, and the service changes the `form_field` table. The service is plain PHP: the tests, PHPStan and a later feature can all use it without a browser.
 
         Two more parts finish the forms phase. A field that has answers cannot change its type: an old answer "Grade 3" does not fit a date field. And a program can use a form, with a new `form_id` on `programs`. The sign-up features read `Program::form()` later.
         TEXT)
@@ -59,16 +61,26 @@ return Feature::make('form-editor')
 
                 Do not name the request `FormRequest`. Laravel's base class has that name, and the two would clash. `FormDetailsRequest` checks the name, the slug (filled from the name, as in `CategoryRequest`), the description and `notify_email`, which must be an email address when staff fill it in.
 
-                In `Admin\FormController`, add `create`, `store`, `edit` and `update`. After `store`, send staff to the edit page, because a new form has no questions yet. Add a "New form" button and an edit link to the forms list.
+                Add `create(array $details): Form` and `update(Form $form, array $details): Form` to `FormService`. In `Admin\FormController`, add `create`, `store`, `edit` and `update`. `store()` and `update()` ask for `FormService` and call it, as `FieldController` calls `FieldService`. The controller never calls `Form::create()` itself. See `/guide/services` for the rule.
 
-                The edit page shows the details form. The next steps add the questions above it.
+                After `store` and after `update`, send staff to the edit page, not to the list. A new form has no questions yet, and the next steps put the questions on the edit page. Add a "New form" button and an edit link to the forms list.
+
+                The edit page shows the details form. For the description, use `<x-admin.textarea-field>`, as the field form does: `<april:textarea>` in April UI 1.3.6 does not show its value. The next steps add the questions above the details.
                 TEXT)
             ->think('Why does `store()` redirect to `edit` and not back to the list?')
             ->hint('Copy `CategoryRequest` and `CategoryController`. Change the names and the rules.')
+            ->hint('`FormService::create()` returns the new form, so `store()` can redirect to its edit page. `update()` redirects to the same page, so staff stay on the form.')
             ->code(<<<'PHP'
-                public function store(FormDetailsRequest $request): RedirectResponse
+                // app/Services/FormService.php
+                public function create(array $details): Form
                 {
-                    $form = Form::create($request->validated());
+                    return Form::create($details);
+                }
+
+                // app/Http/Controllers/Admin/FormController.php
+                public function store(FormDetailsRequest $request, FormService $forms): RedirectResponse
+                {
+                    $form = $forms->create($request->validated());
 
                     return to_route('admin.forms.edit', $form)->with('status', 'Form created. Add its fields.');
                 }
@@ -76,7 +88,11 @@ return Feature::make('form-editor')
             ->tryIt('Log in as staff, open Forms and click New form. Create "School booking". You land on its edit page.')
             ->commit('Create forms and edit their details')
             ->docs('https://laravel.com/docs/controllers#restful-partial-resource-routes', 'Laravel docs: Partial resource routes')
-            ->check(Check::route('admin.forms.create', 'admin.forms.store', 'admin.forms.edit', 'admin.forms.update')),
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->check(Check::all(
+                Check::route('admin.forms.create', 'admin.forms.store', 'admin.forms.edit', 'admin.forms.update'),
+                Check::fileContains('app/Services/FormService.php', 'function create'),
+            )),
 
         Step::make('Tell staff when the draft differs from the live version')
             ->explain(<<<'TEXT'
@@ -117,9 +133,11 @@ return Feature::make('form-editor')
                 - `library()`: the active fields that the form does not use yet, for the "Add a field" select.
                 - `hasUnpublishedChanges()`: calls the method on the form.
 
-                In the view, list the fields with their type, their key and a "Required" checkbox. Above the list, show the "Unpublished changes" badge and a Publish button. Under the list, add a select bound with `wire:model="newField"` and an "Add field" button.
+                In the view, list the fields with their type, their key and a "Required" checkbox. Give each item a key, as each row of the program list has one: `wire:key="field-{{ $field->id }}"` on a plain `<li>`, or `:wire:key="'field-'.$field->id"` on an April tag. The test looks for it. Above the list, show the "Unpublished changes" badge and a Publish button. Under the list, add a select bound with `wire:model="newField"` and an "Add field" button.
 
-                The Publish button is the first button that calls a **method**: a public method of the component. `wire:click="publish"` on the button tells Livewire to call `publish()` on the server when staff click. In the program list, the browser only sent a new value for a property. Here it asks the server to run a method. Write `publish()` now. It calls `Form::publish()` from the last feature and flashes a status message.
+                The Publish button is the first button that calls a **method**: a public method of the component. `wire:click="publish"` on the button tells Livewire to call `publish()` on the server when staff click. In the program list, the browser only sent a new value for a property. Here it asks the server to run a method.
+
+                Write `publish()` now. Publishing changes data, so the method does not do it. It asks for the service as a parameter, `publish(FormService $forms)`, as a controller method does. Livewire makes the service for you. Then it calls `$forms->publish($this->form)` and flashes a status message.
                 TEXT)
             ->think('A visitor who is not staff sends a request to the component with the ID of a form. Which line stops them?')
             ->hint('Start from your program list component. Copy `boot()` and the imports, and change the rest.')
@@ -149,9 +167,9 @@ return Feature::make('form-editor')
                         return $this->form->fields()->get();
                     }
 
-                    public function publish(): void
+                    public function publish(FormService $forms): void
                     {
-                        $version = $this->form->publish();
+                        $version = $forms->publish($this->form);
 
                         session()->flash('status', "Version {$version->number} is published.");
                     }
@@ -166,28 +184,79 @@ return Feature::make('form-editor')
             ->docs('https://livewire.laravel.com/docs/4.x/lifecycle-hooks#boot', 'Livewire docs: The boot hook')
             ->docs('https://livewire.laravel.com/docs/4.x/computed-properties', 'Livewire docs: Computed properties')
             ->docs('https://livewire.laravel.com/docs/4.x/actions', 'Livewire docs: Calling methods from the page')
+            ->docs('https://livewire.laravel.com/docs/4.x/actions#dependency-injection', 'Livewire docs: Dependency injection in methods')
             ->check(Check::fileExists('resources/views/components/admin/⚡form-editor.blade.php')),
+
+        Step::make('Change the draft in the form service')
+            ->explain(<<<'TEXT'
+                Before the buttons, write the work that they start. Add three methods to `FormService`. Each one changes a row in the `form_field` pivot table:
+
+                - `addField(Form $form, Field $field): void` attaches the field at the end of the list, not required.
+                - `setRequired(Form $form, Field $field, bool $required): void` sets the `required` flag with `updateExistingPivot()`.
+                - `removeField(Form $form, Field $field): void` detaches the field from the form. It does not delete or archive the field. The field stays in the library, and the old versions still hold it. Then save the positions of the other fields again, so they stay 0, 1, 2...
+
+                Put the loop that saves positions in a private method, `savePositions()`. The next step uses it again.
+
+                The service trusts its input. It does not check that the field is active or new to the form. The component checks the input first, because the input comes from a browser.
+                TEXT)
+            ->think('Staff remove "Allergies" from the camp form by mistake, and publish. What do the old submissions show? How do staff get the question back?')
+            ->hint('`$form->fields()->count()` is the position after the last field, because positions start at 0.')
+            ->hint('`$form->fields()->pluck(\'fields.id\')` gives the IDs of the fields in their order. Name the table, because the pivot table has an `id` too.')
+            ->hint('`$form->fields()->updateExistingPivot($id, [\'position\' => $position])` changes one pivot row.')
+            ->code(<<<'PHP'
+                public function addField(Form $form, Field $field): void
+                {
+                    $form->fields()->attach($field, ['position' => $form->fields()->count(), 'required' => false]);
+                }
+
+                /**
+                 * Take the field out of the draft. The field stays in the library, and old versions keep it.
+                 */
+                public function removeField(Form $form, Field $field): void
+                {
+                    $form->fields()->detach($field);
+
+                    $this->savePositions($form, $form->fields()->pluck('fields.id')->all());
+                }
+
+                /**
+                 * @param  array<int, int>  $ids
+                 */
+                private function savePositions(Form $form, array $ids): void
+                {
+                    foreach ($ids as $position => $id) {
+                        $form->fields()->updateExistingPivot($id, ['position' => $position]);
+                    }
+                }
+                PHP)
+            ->tryIt('In tinker, run `$form = App\Models\Form::firstWhere(\'slug\', \'contact\'); app(App\Services\FormService::class)->addField($form, App\Models\Field::firstWhere(\'key\', \'school\'))`. Then run `$form->fields()->pluck(\'key\')`. School is last. Remove it again with `removeField()`.')
+            ->commit('Change the form draft in FormService')
+            ->docs('https://laravel.com/docs/eloquent-relationships#attaching-detaching', 'Laravel docs: Attaching and detaching')
+            ->docs('https://laravel.com/docs/eloquent-relationships#updating-a-record-on-the-intermediate-table', 'Laravel docs: Updating a pivot row')
+            ->check(Check::all(
+                Check::fileContains('app/Services/FormService.php', 'function addField'),
+                Check::fileContains('app/Services/FormService.php', 'function removeField'),
+            )),
 
         Step::make('Add, require and remove fields')
             ->explain(<<<'TEXT'
-                Add three methods to the component. You wrote one, `publish()`, in the last step. These three are new in one way: they take a **parameter** from the browser.
+                Now add three methods to the component: `add()`, `toggleRequired()` and `remove()`. You wrote one method, `publish()`, in an earlier step. `add()` reads the `newField` property. The other two are new in one way: they take a **parameter** from the browser. Each one also asks for `FormService`, as `publish()` does. Livewire gives the service first and the values from the browser after it.
 
-                `add()` validates `newField`: it is required, it exists in `fields` with no `archived_at`, and the form does not have it yet. Then it attaches the field at the end of the list, not required, and resets `newField`. A visitor can send any ID to a Livewire method, so the rules check what the select already hides.
+                `add()` validates `newField`: it is required, it exists in `fields` with no `archived_at`, and the form does not have it yet. Then it calls `addField()` and resets `newField`. A visitor can send any ID to a Livewire method, so the rules check what the select already hides.
 
-                `toggleRequired(int $fieldId)` flips the `required` flag on the pivot row with `updateExistingPivot()`.
-
-                `remove(int $fieldId)` detaches the field from the form. It does not delete or archive the field. The field stays in the library, and the old versions still hold it. Then save the positions of the other fields again, so they stay 0, 1, 2...
+                `toggleRequired(int $fieldId)` finds the field and calls `setRequired()` with the opposite of its flag. `remove(int $fieldId)` finds the field and calls `removeField()`.
 
                 In the view, use `wire:click="toggleRequired({{ $field->id }})"` on the checkbox, and `wire:click="remove({{ $field->id }})"` on a Remove button. Blade writes the ID into the HTML, for example `toggleRequired(9)`. On a click, Livewire sends the method name and the `9` to the server.
 
-                A parameter is user input, like the `$search` property in the program list. A user can change `9` to any number in the developer tools. So never trust it: `toggleRequired()` finds the field in `$this->fields` with `findOrFail()`, so it only changes a field of this form. And `add()` validates `newField` with the same Laravel rules as a form request.
+                A parameter is user input, like the `$search` property in the program list. A user can change `9` to any number in the developer tools. So never trust it: find the field in `$this->fields` with `findOrFail()`, so the method only changes a field of this form. And `add()` validates `newField` with the same Laravel rules as a form request.
+
+                One trap. Livewire runs a computed property once per request and keeps the result. `add()` reads `$this->fields` in its rules, before the change. Then the page renders with the old list, and the new field does not show until the next click. After each change, call `unset($this->fields)`. Livewire then runs `fields()` again when the view reads it.
                 TEXT)
-            ->think('Staff remove "Allergies" from the camp form by mistake, and publish. What do the old submissions show? How do staff get the question back?')
-            ->hint('Each one is a public method with no return value: `public function toggleRequired(int $fieldId): void`.')
+            ->think('The service does not check that the field is active. The component does. Why does the check belong next to the input, and not in the service?')
+            ->hint('Each one is a public method with no return value: `public function toggleRequired(FormService $forms, int $fieldId): void`.')
             ->hint('`Rule::exists(\'fields\', \'id\')->whereNull(\'archived_at\')` refuses an archived field. `Rule::notIn($this->fields->modelKeys())` refuses a field that the form has.')
-            ->hint('`$this->form->fields()->updateExistingPivot($id, [\'position\' => $position])` changes one pivot row.')
             ->code(<<<'PHP'
-                public function add(): void
+                public function add(FormService $forms): void
                 {
                     $this->validate([
                         'newField' => [
@@ -197,79 +266,89 @@ return Feature::make('form-editor')
                         ],
                     ], ['newField.not_in' => 'The form already has this field.'], ['newField' => 'field']);
 
-                    $this->form->fields()->attach($this->newField, ['position' => $this->fields->count(), 'required' => false]);
+                    $forms->addField($this->form, Field::findOrFail($this->newField));
 
                     $this->reset('newField');
+                    unset($this->fields);
                 }
 
-                public function toggleRequired(int $fieldId): void
+                public function toggleRequired(FormService $forms, int $fieldId): void
                 {
                     $field = $this->fields->findOrFail($fieldId);
 
-                    $this->form->fields()->updateExistingPivot($fieldId, ['required' => ! $field->pivot->required]);
+                    $forms->setRequired($this->form, $field, ! $field->pivot->required);
+
+                    unset($this->fields);
                 }
                 PHP)
             ->tryIt(<<<'TEXT'
-                On the edit page of the contact form, add "School" and tick Required. The badge "Unpublished changes" shows. Open http://localhost:8000/forms/contact in another tab: no School question yet. Publish, and reload the tab.
+                On the edit page of the contact form, add "School" and tick Required. School shows in the list at once, and the badge "Unpublished changes" shows. Open http://localhost:8000/forms/contact in another tab: no School question yet. Publish, and reload the tab.
 
-                Now compare a method call with the program search in the Network tab. Open the Network tab, filter by "livewire", and click a Required checkbox. Open the POST request and its payload. In the program search, `updates` held the new value and `calls` held only `$commit`. Here `updates` is empty, and `calls` holds `{"method": "toggleRequired", "params": [9]}`, with the ID of your field. Click the checkbox again to undo it.
+                Now compare a method call with the program search in the Network tab. Open the Network tab, filter by "livewire", and click a Required checkbox. Open the POST request and its payload. In the program search, `updates` held the new value and `calls` held only `$commit`. Here `updates` is empty, and `calls` holds `{"method": "toggleRequired", "params": [9]}`, with the ID of your field. The service is not in the payload: the server adds it. Click the checkbox again to undo it.
                 TEXT)
             ->commit('Add, require and remove form fields')
-            ->docs('https://laravel.com/docs/eloquent-relationships#attaching-detaching', 'Laravel docs: Attaching and detaching')
-            ->docs('https://laravel.com/docs/eloquent-relationships#updating-a-record-on-the-intermediate-table', 'Laravel docs: Updating a pivot row')
             ->docs('https://livewire.laravel.com/docs/4.x/validation', 'Livewire docs: Validation')
+            ->docs('https://livewire.laravel.com/docs/4.x/computed-properties#clearing-the-memo', 'Livewire docs: Clearing the memo')
             ->check(Check::all(
                 Check::fileContains('resources/views/components/admin/⚡form-editor.blade.php', 'function add'),
-                Check::fileContains('resources/views/components/admin/⚡form-editor.blade.php', 'function remove'),
+                Check::fileContains('resources/views/components/admin/⚡form-editor.blade.php', 'removeField'),
             )),
 
         Step::make('Drag the fields into a new order')
             ->explain(<<<'TEXT'
                 This step adds the last new idea: drag and drop. It calls a method too, but the browser chooses the parameters. Livewire 4 has a `wire:sort` directive. Put `wire:sort="sort"` on the list, and `wire:sort:item="{{ $field->id }}"` on each item. When staff drop an item, Livewire calls `sort()` with the ID of the item and its new position, counted from 0.
 
-                In `sort()`, take the list of IDs in the current order, take out the moved ID, and put it back at the new position. Then save each position. Write `savePositions()` once and use it in `remove()` too.
+                The order is data, so the work goes in the service. Add `reorder(Form $form, Field $field, int $position): void` to `FormService`. Take the list of IDs in the current order, take out the moved ID, and put it back at the new position. Then save each position with `savePositions()`.
+
+                In the component, `sort(FormService $forms, int $fieldId, int $position)` finds the field in `$this->fields`, calls `reorder()`, and clears the computed property.
 
                 Put `wire:sort:ignore` on the checkbox and the Remove button. Then a click on them does not start a drag.
                 TEXT)
             ->think('Why save every position again, and not only the position of the moved field?')
-            ->hint('`$this->fields` is a collection, so you can use the collection methods on it. `modelKeys()` gives the IDs in the current order.')
-            ->hint('`collect($ids)->reject(fn (int $id) => $id === $fieldId)->values()` takes the moved ID out. `values()` numbers the rest from 0 again.')
-            ->hint('`$ids->splice($position, 0, [$fieldId])` puts the ID back into the collection at the new position.')
+            ->hint('`$form->fields()->pluck(\'fields.id\')` is a collection, so you can use the collection methods on it.')
+            ->hint('`$ids->reject(fn (int $id) => $id === $field->id)->values()` takes the moved ID out. `values()` numbers the rest from 0 again.')
+            ->hint('`$ids->splice($position, 0, [$field->id])` puts the ID back into the collection at the new position.')
             ->code(<<<'PHP'
-                public function sort(int $fieldId, int $position): void
+                // app/Services/FormService.php
+                public function reorder(Form $form, Field $field, int $position): void
                 {
-                    $ids = collect($this->fields->modelKeys())->reject(fn (int $id) => $id === $fieldId)->values();
-                    $ids->splice($position, 0, [$fieldId]);
+                    $ids = $form->fields()->pluck('fields.id')->reject(fn (int $id) => $id === $field->id)->values();
+                    $ids->splice($position, 0, [$field->id]);
 
-                    $this->savePositions($ids->all());
+                    $this->savePositions($form, $ids->all());
                 }
 
-                /**
-                 * @param  array<int, int>  $ids
-                 */
-                private function savePositions(array $ids): void
+                // The component
+                public function sort(FormService $forms, int $fieldId, int $position): void
                 {
-                    foreach ($ids as $position => $id) {
-                        $this->form->fields()->updateExistingPivot($id, ['position' => $position]);
-                    }
+                    $forms->reorder($this->form, $this->fields->findOrFail($fieldId), $position);
+
+                    unset($this->fields);
                 }
                 PHP)
             ->tryIt('Drag "Message" to the top of the contact form. In the Network tab, the POST request has `calls` with the method `sort` and two parameters: the ID of the field and its new position. Reload the page: the order stays. Publish, and open the public form.')
             ->commit('Reorder form fields with wire:sort')
             ->docs('https://livewire.laravel.com/docs/4.x/wire-sort', 'Livewire docs: wire:sort')
             ->docs('https://laravel.com/docs/collections#method-splice', 'Laravel docs: The splice method')
-            ->check(Check::fileContains('resources/views/components/admin/⚡form-editor.blade.php', 'wire:sort=')),
+            ->check(Check::all(
+                Check::fileContains('resources/views/components/admin/⚡form-editor.blade.php', 'wire:sort='),
+                Check::fileContains('app/Services/FormService.php', 'function reorder'),
+            )),
 
         Step::make('Block a type change when a field has answers')
+            ->run('php artisan make:exception FieldTypeIsLocked')
             ->explain(<<<'TEXT'
                 A field has answers such as "Westsyde Elementary". If staff change it to a date field, those answers do not fit, and the export and the profile break. So the type is locked once a field has answers. Staff archive the field and add a new one instead.
 
-                Add `hasAnswers(): bool` to `Field`. The answers are JSON in `submissions`. Laravel can query inside a JSON column with `->`: `whereNotNull("answers->{$this->key}")` finds the submissions with an answer under the key.
+                Add `hasAnswers(): bool` to `Field`. It only reads, so it belongs in the model. The answers are JSON in `submissions`. Laravel can query inside a JSON column with `->`: `whereNotNull("answers->{$this->key}")` finds the submissions with an answer under the key.
 
-                In `FieldRequest`, add a closure rule to `type`. It fails when the request edits a field, the type is new, and the field has answers. On the field form, show the type as read-only text with a hidden input when the field has answers, and explain why.
+                The lock is a business rule, so it goes in `FieldService::update()`, from "Forms and fields". This is the change that the service was ready for. Every page and command that changes a field now gets the rule. When the type is new and the field has answers, the service refuses with a **named exception**. Run the command below. It makes `app/Exceptions/FieldTypeIsLocked.php`. Give it the message for staff in its constructor.
+
+                The service does not know about pages or redirects. The controller does. In `FieldController::update()`, catch `FieldTypeIsLocked` and send staff back with the message as an error on `type`, and with their input. On the field form, show the type as read-only text with a hidden input when the field has answers, and explain why.
                 TEXT)
             ->think('Why check `hasAnswers()` only when the type changes, and not on every save?')
-            ->hint('A closure rule takes `$attribute`, `$value` and `$fail`. Call `$fail(\'...\')` with the message.')
+            ->hint('The validated `type` is a string. `FieldType::tryFrom($data[\'type\'])` turns it into the enum, so you can compare it with `$field->type`.')
+            ->hint('`back()->withInput()->withErrors([\'type\' => $exception->getMessage()])` shows the message under the type, as a validation error does.')
             ->code(<<<'PHP'
                 // app/Models/Field.php
                 public function hasAnswers(): bool
@@ -277,23 +356,35 @@ return Feature::make('form-editor')
                     return Submission::whereNotNull("answers->{$this->key}")->exists();
                 }
 
-                // app/Http/Requests/FieldRequest.php
-                private function typeIsLocked(): Closure
+                // app/Services/FieldService.php
+                public function update(Field $field, array $data): Field
                 {
-                    return function (string $attribute, mixed $value, Closure $fail): void {
-                        $field = $this->field();
+                    $type = FieldType::tryFrom((string) ($data['type'] ?? ''));
 
-                        if ($field !== null && $value !== $field->type->value && $field->hasAnswers()) {
-                            $fail('This field has answers, so its type cannot change. Archive it and add a new field.');
-                        }
-                    };
+                    if ($type !== null && $type !== $field->type && $field->hasAnswers()) {
+                        throw new FieldTypeIsLocked;
+                    }
+
+                    $field->update($data);
+
+                    return $field;
+                }
+
+                // app/Http/Controllers/Admin/FieldController.php, in update()
+                try {
+                    $fields->update($field, $request->validated());
+                } catch (FieldTypeIsLocked $exception) {
+                    return back()->withInput()->withErrors(['type' => $exception->getMessage()]);
                 }
                 PHP)
-            ->tryIt('Send the contact form once. Then open "Your name" in the Field library. The type is read-only, with the reason under it.')
+            ->tryIt('Send the contact form once. Then open "Your name" in the Field library. The type is read-only, with the reason under it. In tinker, try `app(App\Services\FieldService::class)->update(App\Models\Field::firstWhere(\'key\', \'contact_name\'), [\'type\' => \'date\'])`. You see the `FieldTypeIsLocked` exception with your message.')
             ->commit('Lock the type of fields with answers')
             ->docs('https://laravel.com/docs/queries#json-where-clauses', 'Laravel docs: JSON where clauses')
-            ->docs('https://laravel.com/docs/validation#using-closures', 'Laravel docs: Closure rules')
-            ->check(Check::fileContains('app/Models/Field.php', 'function hasAnswers')),
+            ->docs('https://laravel.com/docs/responses#redirecting-with-flashed-session-data', 'Laravel docs: Redirecting with flashed session data')
+            ->check(Check::all(
+                Check::fileContains('app/Models/Field.php', 'function hasAnswers'),
+                Check::fileContains('app/Services/FieldService.php', 'FieldTypeIsLocked'),
+            )),
 
         Step::make('Let a program use a form')
             ->run('php artisan make:migration add_form_id_to_programs_table')
@@ -324,7 +415,7 @@ return Feature::make('form-editor')
             ->explain(<<<'TEXT'
                 Run the acceptance test with `guide:verify`. Then run `composer ci:check`.
 
-                PHPStan does not read the PHP part of a single-file Livewire component, so test every public method. The acceptance test calls each one.
+                PHPStan does not read the PHP part of a single-file Livewire component, so test every public method. The acceptance test calls each one. This is one more reason to keep the work in `FormService`: PHPStan reads every file in `app/Services`.
 
                 In your pull request, add a short screen recording of the editor: add a field, drag it, publish.
                 TEXT)

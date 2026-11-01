@@ -11,7 +11,7 @@ return Feature::make('forms-fields')
     ->level(2)
     ->needs(['staff-roles'])
     ->summary('A shared field library and forms that use it. Each field has a fixed key, a type, a scope and an optional role.')
-    ->teaches(['Backed enums', 'Enum and JSON casts', 'belongsToMany with pivot columns', 'Validating arrays', 'Archiving instead of deleting', 'Idempotent seeders'])
+    ->teaches(['Backed enums', 'Enum and JSON casts', 'belongsToMany with pivot columns', 'Validating arrays', 'Archiving instead of deleting', 'Service classes', 'Idempotent seeders'])
     ->test('FormsFieldsTest.php')
     ->intro(<<<'TEXT'
         The centre asks the same questions in many places: the school of the child, allergies, an emergency contact, the people who can pick up the child. Camps, clubs, QUARKS applications and party requests all ask some of them. Each season, staff want to add a question, change the words of another, or stop asking one.
@@ -23,6 +23,8 @@ return Feature::make('forms-fields')
         A field also has a **type** (short text, date, one choice...), a **scope** and an optional **role**. The scope says where an answer belongs: to the child, to the family, or to this one sign-up. The role is for code. When the registration list needs the emergency phone, it asks for the role `EmergencyPhone`, never for the label "Emergency contact phone". Staff can rename the label, and the code still works.
 
         One more rule: staff never delete a field or a choice. They archive it. Old answers must keep their question, so the row stays in the database.
+
+        Keep the rule of the app in mind: **controllers do HTTP, services do the work**. A controller validates the request, calls a service, and returns a response. A service in `app/Services` makes every change to the data. In this feature, `FieldService` creates, changes, archives and restores fields. The staff pages call it.
 
         In this feature, you build the library, the staff pages for it, and the link between forms and fields. The next features show a form, save the answers, and give staff a form editor.
         TEXT)
@@ -64,6 +66,8 @@ return Feature::make('forms-fields')
                 Run the commands below. The full namespace `App/Enums/` in each name puts the file in `app/Enums`, even when that folder does not exist yet. Give each case a snake_case value, such as `case LongText = 'long_text';`. The database stores the value.
 
                 Give each enum a `label()` method for the staff pages. Give `FieldType` one more method, `hasOptions()`. It is true for `Choice` and `Checkboxes`, because only these types have a list of choices.
+
+                Use these exact labels for `FieldRole`: "Allergies", "Medical notes", "Emergency contact name", "Emergency contact phone" and "People who can pick up". The registration lists use them later as column headers, and their test expects these words.
                 TEXT)
             ->think('The scope and the role are enums, but the label of a field is a column. What is the difference between a value that the code reads and a value that the code only shows?')
             ->hint('`in_array($this, [self::Choice, self::Checkboxes], true)` is true when the case is one of the two.')
@@ -98,13 +102,13 @@ return Feature::make('forms-fields')
                     }
                 }
                 PHP)
-            ->tryIt('In `php artisan tinker`, run `App\Enums\FieldType::Choice->hasOptions()` and `App\Enums\FieldType::Date->hasOptions()`. You see `true` and `false`.')
+            ->tryIt('In `php artisan tinker`, run `App\Enums\FieldType::Choice->hasOptions()` and `App\Enums\FieldType::Date->hasOptions()`. You see `true` and `false`. Then run `App\Enums\FieldRole::PickupPeople->label()`. You see "People who can pick up".')
             ->commit('Add the field type, scope and role enums')
             ->docs('https://laravel.com/docs/eloquent-mutators#enum-casting', 'Laravel docs: Enum casting')
             ->check(Check::all(
                 Check::classExists('App\Enums\FieldType'),
                 Check::classExists('App\Enums\FieldScope'),
-                Check::classExists('App\Enums\FieldRole'),
+                Check::fileContains('app/Enums/FieldRole.php', 'People who can pick up'),
             )),
 
         Step::make('Create the Field model and its table')
@@ -148,16 +152,22 @@ return Feature::make('forms-fields')
             ->explain(<<<'TEXT'
                 Open `app/Models/Field.php`. Use `app/Models/Program.php` as your example.
 
-                Add the columns to `#[Fillable]`, with `key`: staff set it once, on create. Leave out `archived_at`. Only the archive method sets it, never a form.
+                Add the columns to `#[Fillable]`, with `key`: staff set it once, on create. Leave out `archived_at`. Only `FieldService` sets it, never a form.
 
                 Add casts. `type`, `scope` and `role` cast to their enums, so `$field->type` is a `FieldType` and not a string. `options` casts to `array`, so Laravel turns the JSON into a PHP array and back. `sensitive` is a boolean and `archived_at` is a datetime.
 
                 Add an `active` scope that keeps only the fields with no `archived_at`, and an `isArchived()` method. Write the docblock at the top, as in `Program`. PHPStan reads it.
 
-                In `database/factories/FieldFactory.php`, make a label and build the key from it with `Str::slug($label, '_')`. Then add states that the test uses: `choice(array $choices)`, `sensitive()` and `archived()`.
+                In `database/factories/FieldFactory.php`, make a label and build the key from it with `Str::slug($label, '_')`. Then add four states. Later tests use them all, so keep the names:
+
+                - `type(FieldType $type)` sets the type.
+                - `choice(array $choices, FieldType $type = FieldType::Choice)` sets the type and the choices. The second argument lets a test make a `Checkboxes` field with choices.
+                - `sensitive()` sets `sensitive` to `true` and `review_after_months` to 12.
+                - `archived()` sets `archived_at` to now.
                 TEXT)
             ->think('The app uses `CarbonImmutable` for dates (see `AppServiceProvider`). Which type do you write for `$archived_at` in the docblock?')
             ->hint('`Str::slug(\'School name\', \'_\')` gives `school_name`. The second argument is the separator.')
+            ->hint('Make the label with `fake()->unique()->word().\' \'.fake()->word()`. The unique first word keeps the keys unique. PHPStan refuses `words(2, true)`, because its return type is `array|string`.')
             ->hint('In `choice()`, turn `[\'small\' => \'Small\']` into `[[\'value\' => \'small\', \'label\' => \'Small\', \'archived\' => false]]` with `collect()->map()->values()->all()`.')
             ->code(<<<'PHP'
                 protected function casts(): array
@@ -204,6 +214,8 @@ return Feature::make('forms-fields')
                 Laravel names a pivot table from the two models in alphabetical order, so it looks for `field_form`. Our table is `form_field`, so pass the name as the second argument of `belongsToMany()`. Then add `withPivot()` to read the two columns, and `orderByPivot('position')` to sort the fields.
 
                 Add `forms()` to `Field` too, with the same table name.
+
+                Last, fill in `Form` and `FormFactory`, as you did for `Field`: the four columns in `#[Fillable]`, a docblock, and a factory that makes a name and a slug from it.
                 TEXT)
             ->think('Why is `required` a column on the pivot table, and not on the `fields` table?')
             ->hint('`$table->unique([\'form_id\', \'field_id\']);` makes the pair unique.')
@@ -236,9 +248,9 @@ return Feature::make('forms-fields')
         Step::make('Validate a field, and keep the key fixed')
             ->run('php artisan make:request FieldRequest')
             ->explain(<<<'TEXT'
-                Staff create and edit fields with a form. `FieldRequest` checks what they send. Copy `authorize()` from `CategoryRequest`.
+                Staff create and edit fields with a form. `FieldRequest` checks what they send. Copy `authorize()` from `ProgramRequest`.
 
-                **The key.** On create, fill the key from the label when staff leave it empty, as `CategoryRequest` does for the slug. On edit, leave the key out of `rules()`. A value without a rule is not in `validated()`, so the controller never saves it. The key cannot change, even if someone sends a new one.
+                **The key.** On create, fill the key from the label when staff leave it empty, as `ProgramRequest` does for the slug. On edit, leave the key out of `rules()`. A value without a rule is not in `validated()`, so the controller never saves it. The key cannot change, even if someone sends a new one.
 
                 **The enums.** `Rule::enum(FieldType::class)` accepts only the values of the enum. Use it for `type`, `scope` and `role`. The role must also be unique, except for the field itself.
 
@@ -287,29 +299,91 @@ return Feature::make('forms-fields')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/12', 'Laravel From Scratch, episode 12: Form Request Classes')
             ->check(Check::fileContains('app/Http/Requests/FieldRequest.php', 'hasOptions')),
 
+        Step::make('Put the work on fields in a service')
+            ->run('php artisan make:class Services/FieldService')
+            ->explain(<<<'TEXT'
+                The app follows one rule: **controllers do HTTP, services do the work**. A controller reads the request, checks it with a form request, calls a service, and returns a page or a redirect. A service makes every change to the data, even a plain `create()`. You met this rule in "Staff: manage programs", and `/guide/services` explains it.
+
+                Why a class only to call `Field::create()`? Today it is one line. Next season, a field may need more: a check before a change, a record in a log, a second table. Then the change happens in one place, and every page, command and test that changes fields gets it. The form editor feature adds a rule to `update()` in exactly this way.
+
+                Run the command below. It makes `app/Services/FieldService.php`, a plain class. Add four methods:
+
+                - `create(array $data): Field` creates a field from the validated data.
+                - `update(Field $field, array $data): Field` changes it. The key is not in the data, because `FieldRequest` has no rule for it on edit.
+                - `archive(Field $field): void` sets `archived_at` to now.
+                - `restore(Field $field): void` sets it back to `null`.
+
+                `archived_at` is not fillable, so `update(['archived_at' => now()])` does nothing. `forceFill()` sets an attribute that is not fillable. Use it only with values that your code chooses, never with request data.
+                TEXT)
+            ->think('Why is the service not part of the controller? Think of a seeder or a console command that must archive a field.')
+            ->hint('A service needs no parent class and no constructor. Laravel makes it for you when a controller method asks for it.')
+            ->hint('`$field->forceFill([\'archived_at\' => now()])->save()` sets the date and saves the row.')
+            ->code(<<<'PHP'
+                class FieldService
+                {
+                    public function create(array $data): Field
+                    {
+                        return Field::create($data);
+                    }
+
+                    public function update(Field $field, array $data): Field
+                    {
+                        $field->update($data);
+
+                        return $field;
+                    }
+
+                    /**
+                     * Archive the field. It stays in the database, so old answers keep their question.
+                     */
+                    public function archive(Field $field): void
+                    {
+                        $field->forceFill(['archived_at' => now()])->save();
+                    }
+
+                    public function restore(Field $field): void
+                    {
+                        $field->forceFill(['archived_at' => null])->save();
+                    }
+                }
+                PHP)
+            ->tryIt('In `php artisan tinker`, run `$field = app(App\Services\FieldService::class)->create([\'key\' => \'shirt\', \'label\' => \'Shirt\', \'type\' => \'text\', \'scope\' => \'signup\'])`. Then run `app(App\Services\FieldService::class)->archive($field)` and `$field->isArchived()`. You see `true`. Run `$field->delete()` to clean up.')
+            ->commit('Add the field service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/container#zero-configuration-resolution', 'Laravel docs: Zero configuration resolution')
+            ->docs('https://laravel.com/docs/eloquent#mass-assignment', 'Laravel docs: Mass assignment')
+            ->check(Check::fileContains('app/Services/FieldService.php', 'function archive')),
+
         Step::make('Add the controller, the routes, and archive instead of delete')
             ->run('php artisan make:controller Admin/FieldController --model=Field')
             ->explain(<<<'TEXT'
                 Add the routes in the staff group in `routes/web.php`: a resource without `show` and without `destroy`. There is no delete route, so nobody can delete a field by mistake.
 
-                Add two more routes: `POST fields/{field}/archive` named `fields.archive`, and `POST fields/{field}/restore` named `fields.restore`. Archive sets `archived_at` to now. Restore sets it back to `null`.
+                Add two more routes: `POST fields/{field}/archive` named `fields.archive`, and `POST fields/{field}/restore` named `fields.restore`.
 
-                `archived_at` is not fillable, so `update(['archived_at' => now()])` does nothing. Set the property and call `save()`.
+                The controller does only HTTP work. `store()`, `update()`, `archive()` and `restore()` each ask for `FieldService` as a parameter, call one method, and redirect with a status message. Laravel sees the type and makes the service for you. The controller never calls `create()`, `update()` or `save()` on a model.
 
-                In `index()`, list the active fields first, then the archived ones, each sorted by label. `create()` and `edit()` pass the enum cases for the select boxes: `FieldType::cases()` and so on.
+                In `index()`, list the active fields first, then the archived ones, each sorted by label. Reading is not a change, so the controller can query the model. `create()` and `edit()` pass the enum cases for the select boxes: `FieldType::cases()` and so on.
                 TEXT)
             ->think('The table already refuses to delete a field that a form uses. Why have no delete route at all?')
             ->hint('`Field::orderByRaw(\'archived_at is not null\')->orderBy(\'label\')` puts the active fields first.')
+            ->hint('`public function store(FieldRequest $request, FieldService $fields)` gets the validated request and the service.')
             ->code(<<<'PHP'
                 Route::resource('fields', Admin\FieldController::class)->except(['show', 'destroy']);
                 Route::post('fields/{field}/archive', [Admin\FieldController::class, 'archive'])->name('fields.archive');
                 Route::post('fields/{field}/restore', [Admin\FieldController::class, 'restore'])->name('fields.restore');
 
                 // In the controller:
-                public function archive(Field $field): RedirectResponse
+                public function store(FieldRequest $request, FieldService $fields): RedirectResponse
                 {
-                    $field->archived_at = now();
-                    $field->save();
+                    $fields->create($request->validated());
+
+                    return to_route('admin.fields.index')->with('status', 'Field created.');
+                }
+
+                public function archive(Field $field, FieldService $fields): RedirectResponse
+                {
+                    $fields->archive($field);
 
                     return to_route('admin.fields.index')->with('status', 'Field archived.');
                 }
@@ -317,12 +391,16 @@ return Feature::make('forms-fields')
             ->tryIt('Run `php artisan route:list --name=admin.fields`. You see index, create, store, edit, update, archive and restore, and no destroy.')
             ->commit('Add the field library controller and routes')
             ->docs('https://laravel.com/docs/controllers#restful-partial-resource-routes', 'Laravel docs: Partial resource routes')
+            ->docs('https://laravel.com/docs/controllers#method-injection', 'Laravel docs: Method injection')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
-            ->check(Check::route('admin.fields.index', 'admin.fields.store', 'admin.fields.update', 'admin.fields.archive', 'admin.fields.restore')),
+            ->check(Check::all(
+                Check::route('admin.fields.index', 'admin.fields.store', 'admin.fields.update', 'admin.fields.archive', 'admin.fields.restore'),
+                Check::fileContains('app/Http/Controllers/Admin/FieldController.php', 'FieldService'),
+            )),
 
         Step::make('Build the staff pages and the menu link')
             ->explain(<<<'TEXT'
-                Create `index`, `create`, `edit` and `form` views in `resources/views/admin/fields`. Copy the category views and change what is different.
+                Create `index`, `create`, `edit` and `form` views in `resources/views/admin/fields`. Copy the views in `resources/views/admin/programs` and change what is different. Use `<x-admin.textarea-field>` for the help text.
 
                 The list shows the label, the key, the type, the scope and the role. Show an "Archived" badge on archived fields, and a "Sensitive" badge on sensitive ones.
 
@@ -330,7 +408,7 @@ return Feature::make('forms-fields')
 
                 For the choices, loop over the existing options and add three empty rows. An existing row has a hidden `value` input, a label input and an "Archived" checkbox. An empty row has only a label input. Staff save to get more empty rows. A later feature can make this nicer with Livewire.
 
-                On the edit page, add an "Archive field" button, or a "Restore field" button when the field is archived. Last, add a "Field library" link to the staff menu in `resources/views/layouts/app.blade.php`.
+                On the edit page, add an "Archive field" button, or a "Restore field" button when the field is archived. Last, add a "Field library" link to the staff menu in `resources/views/layouts/app.blade.php`. Copy the "Programs" link, with its `wire:navigate`, so the page opens without a full reload.
                 TEXT)
             ->think('After a failed save, the page must show what staff typed. Which helper gives the old rows of choices?')
             ->hint('`[...old(\'options\', $field->options ?? []), ...array_fill(0, 3, [])]` gives the existing rows and three empty rows.')

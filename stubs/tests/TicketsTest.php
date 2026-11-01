@@ -1,11 +1,11 @@
 <?php
 
-use App\Cart;
 use App\Models\Order;
 use App\Models\ProgramSession;
 use App\Models\Ticket;
 use App\Models\TicketType;
 use App\Models\User;
+use App\Services\CartService;
 use Illuminate\Support\Facades\URL;
 
 /*
@@ -40,7 +40,7 @@ test('a guest buys two tickets, and each paid ticket has its own code', function
 
     expect(Ticket::count())->toBe(2)
         ->and(Ticket::whereNotNull('code')->count())->toBe(0)
-        ->and(app(Cart::class)->total(null))->toBe(2400);
+        ->and(app(CartService::class)->total(null))->toBe(2400);
 
     $this->post(route('checkout.store'), ['email' => 'visitor@example.com']);
     $order = Order::sole();
@@ -60,7 +60,7 @@ test('a ticket costs the price of its type, whatever the form says', function ()
 
     $this->post(route('tickets.store'), ['ticket_type_id' => $type->id, 'quantity' => 1, 'price_cents' => 1]);
 
-    expect(app(Cart::class)->total(null))->toBe(1200);
+    expect(app(CartService::class)->total(null))->toBe(1200);
 });
 
 test('a sold-out ticket type is refused', function () {

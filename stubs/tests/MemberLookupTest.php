@@ -4,12 +4,14 @@ use App\Models\Membership;
 use App\Models\MembershipPlan;
 use App\Models\User;
 use Illuminate\Support\Carbon;
+use Livewire\Livewire;
 
 /*
 | Acceptance test for the "Member lookup" feature.
 |
 | At the front desk, staff search for a member by name or email and see the
-| plan and the end date of the membership.
+| plan and the end date of the membership. The results change while staff
+| type, and the address keeps the search.
 */
 
 beforeEach(function () {
@@ -79,4 +81,23 @@ test('people without a paid membership are not members', function () {
         ->assertDontSee('Sam Unpaid')
         ->assertDontSee('Sam Visitor')
         ->assertSee('No member matches');
+});
+
+test('staff see the results while they type', function () {
+    $parent = User::factory()->create(['name' => 'Priya Sharma']);
+    Membership::factory()->for($parent)->create();
+
+    Livewire::actingAs($this->staff)
+        ->test('admin.member-search')
+        ->assertDontSee('Priya Sharma')
+        ->set('search', 'pri')
+        ->assertSee('Priya Sharma')
+        ->set('search', 'tom')
+        ->assertDontSee('Priya Sharma');
+});
+
+test('a person who is not staff cannot use the member search', function () {
+    Livewire::actingAs(User::factory()->create())
+        ->test('admin.member-search')
+        ->assertForbidden();
 });

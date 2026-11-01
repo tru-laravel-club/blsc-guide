@@ -11,14 +11,14 @@ return Feature::make('membership-plans')
     ->level(3)
     ->needs(['cart-orders'])
     ->summary('Staff manage membership plans. Families buy and renew memberships online. Each membership has an end date, and a renewal starts when the current membership ends.')
-    ->teaches(['Implementing an interface', 'Date casts and date math', 'Dynamic scopes', 'Time travel in tests', 'Checkbox fields'])
+    ->teaches(['Implementing an interface', 'Service classes', 'Date casts and date math', 'Dynamic scopes', 'Time travel in tests', 'Checkbox fields'])
     ->test('MembershipPlansTest.php')
     ->intro(<<<'TEXT'
         A family membership lets a family visit all year, and later it gives member prices for programs. The centre sells a few plans, such as Family and Individual. Next year it will add or change plans, so the plans are data that staff manage, not code.
 
-        A `MembershipPlan` is what staff sell: a name, a description, a price, a length in months, a position and an "active" flag. A `Membership` is one family's membership: a user, a plan, a start date and an end date. It implements `Purchasable`, so it goes through the cart from Cart and orders.
+        A `MembershipPlan` is what staff sell: a name, a description, a price, a length in months, a position and an "active" flag. A `Membership` is one family's membership: a user, a plan, a start date and an end date. It implements `Purchasable`, so it goes through the cart from Cart and orders. `MembershipService` does the work on memberships, and `MembershipPlanService` saves the plans (see `/guide/services`).
 
-        This is the path of a purchase. A logged-in parent clicks "Add to cart" on the Memberships page. The app makes an unpaid `Membership` with no dates and adds it to the cart. When the order is paid, `fulfil()` gives the membership its dates. A membership without dates is not paid, so it is never active.
+        This is the path of a purchase. A logged-in parent clicks "Add to cart" on the Memberships page. `MembershipService` makes an unpaid `Membership` with no dates, and the controller adds it to the cart. When the order is paid, `MembershipService::fulfil()` gives the membership its dates. A membership without dates is not paid, so it is never active.
 
         Renewals follow one rule. If the family has a membership that ends today or later, the new one starts the day after it ends. Otherwise it starts today. So a family that renews early loses no days.
 
@@ -29,7 +29,7 @@ return Feature::make('membership-plans')
     ->docs('https://laravel.com/docs/mocking#interacting-with-time', 'Laravel docs: Interacting with time in tests')
     ->reflect([
         'The centre adds a "Grandparent" plan. Does it need a developer? What if it wants a plan that lasts until a fixed date, such as August 31?',
-        'Why does a membership get its dates in `fulfil()`, and not when the parent adds it to the cart?',
+        'Why does a membership get its dates in `MembershipService::fulfil()`, and not when the parent adds it to the cart?',
         '`activeMembership()` takes a date. Which later feature needs a date other than today? Why?',
         'Which step was the hardest? What would help the next contributor? Open an issue or a pull request in blsc-guide to improve that step.',
     ])
@@ -87,7 +87,7 @@ return Feature::make('membership-plans')
             ->explain(<<<'TEXT'
                 Open `app/Models/MembershipPlan.php`. Put the six columns in `#[Fillable]`, cast `is_active` to a boolean, and add `memberships(): HasMany`. Add a `forSale` scope: active plans only, sorted by `position` and then by `name`.
 
-                Open `app/Models/Membership.php`. Put only `membership_plan_id` in `#[Fillable]`. The dates come from `fulfil()`, never from a form. Cast both dates with `date`. Add `user(): BelongsTo` and `plan(): BelongsTo`. The relationship is called `plan`, not `membershipPlan`, so pass the column `membership_plan_id` as the second argument.
+                Open `app/Models/Membership.php`. Put only `membership_plan_id` in `#[Fillable]`. The dates come from `MembershipService::fulfil()`, never from a form. Cast both dates with `date`. Add `user(): BelongsTo` and `plan(): BelongsTo`. The relationship is called `plan`, not `membershipPlan`, so pass the column `membership_plan_id` as the second argument.
 
                 In `MembershipPlanFactory`, make a Family plan for $95.00 and 12 months. In `MembershipFactory`, make a paid membership that is active today: it started a month ago and ends in 11 months. Add an `expired()` state and an `unpaid()` state with no dates.
                 TEXT)
@@ -136,84 +136,174 @@ return Feature::make('membership-plans')
 
         Step::make('Make a membership purchasable')
             ->explain(<<<'TEXT'
-                Add `implements Purchasable` to `Membership` and write the four methods.
+                Add `implements Purchasable` to `Membership` and write the four methods. Each one only reads:
 
-                `orderDescription()` returns the plan name and its length, such as "Family membership, 12 months". `priceCents()` returns the plan price. `confirmationLine()` returns the plan name and both dates.
+                1. `orderDescription()` returns the plan name and its length, such as "Family membership, 12 months".
+                2. `priceCents()` returns the plan price.
+                3. `confirmationLine()` returns the plan name and both dates.
+                4. `fulfiller()` returns `MembershipService::class`. You write that service in the next step.
 
-                `fulfil()` gives the membership its dates. If it already has a start date, it does nothing. Otherwise, find the latest `ends_on` of the user's memberships. If that day is today or later, start the day after it. If not, start today. The end date is the start date plus the months of the plan, minus one day.
+                The dates come from the fulfiller, never from a form. So `starts_on` and `ends_on` stay out of `#[Fillable]`.
+                TEXT)
+            ->think('`confirmationLine()` shows both dates. When does the family read it? Are the dates always set at that moment?')
+            ->hint('`$this->starts_on?->format(\'M j, Y\')` formats a date, such as "Nov 15, 2026".')
+            ->code(<<<'PHP'
+                public function orderDescription(): string
+                {
+                    return $this->plan->name.' membership, '.$this->plan->months.' months';
+                }
+
+                /**
+                 * @return class-string<MembershipService>
+                 */
+                public function fulfiller(): string
+                {
+                    return MembershipService::class;
+                }
+                PHP)
+            ->tryIt('In `php artisan tinker`, run `App\Models\Membership::factory()->create()->confirmationLine()`. You see "Family membership:" and two dates.')
+            ->commit('Make memberships purchasable')
+            ->check(Check::fileContains('app/Models/Membership.php', 'implements Purchasable')),
+
+        Step::make('Start and renew a membership in the service')
+            ->run('php artisan make:class Services/MembershipService')
+            ->explain(<<<'TEXT'
+                Run the command below and add `implements Fulfiller` to the class. Write `fulfil(Purchasable $item): void`. It gives a paid membership its dates:
+
+                1. Check that the item is a `Membership`. If it is not, throw an `InvalidArgumentException`, as `TicketService` does.
+                2. If the membership already has a start date, do nothing. The order calls `fulfil()` once, but the rule keeps the dates safe anyway.
+                3. Find the latest `ends_on` of the user's memberships. If that day is today or later, start the day after it. If not, start today.
+                4. The end date is the start date plus the months of the plan, minus one day.
 
                 The dates are `CarbonImmutable`, so `addDay()` returns a new date and does not change the old one. With a mutable date, `$startsOn->addMonths()` would also move the start date.
+
+                Why a service? The renewal rule is the most important rule of the feature. It changes data, and the staff may later want to start a membership by hand at the front desk. Both doors then call the same method. `/guide/services` explains the rule.
                 TEXT)
-            ->think('A membership starts on January 31 and lasts one month. Which end date do you want? Look up `addMonthsNoOverflow()`.')
-            ->hint('`$this->user->memberships()->max(\'ends_on\')` returns the latest end date as text, or `null`. `max()` ignores memberships without dates.')
+            ->think('Why does the renewal rule live in `MembershipService`, and not in `OrderService` or the model? Which class would need to change if the centre adds a grace period of one week?')
+            ->hint('A membership starts on January 31 and lasts one month. Which end date do you want? Look up `addMonthsNoOverflow()`.')
+            ->hint('`$item->user->memberships()->max(\'ends_on\')` returns the latest end date as text, or `null`. `max()` ignores memberships without dates.')
             ->hint('`Date::parse($currentEnd)->addDay()` turns the text into a date and adds one day. `Date` is `Illuminate\Support\Facades\Date`.')
             ->code(<<<'PHP'
-                public function fulfil(): void
+                /**
+                 * Give a paid membership its dates. A renewal starts the day after the current membership ends.
+                 */
+                public function fulfil(Purchasable $item): void
                 {
-                    if ($this->starts_on !== null) {
+                    if (! $item instanceof Membership) {
+                        throw new InvalidArgumentException('MembershipService fulfils memberships only.');
+                    }
+
+                    if ($item->starts_on !== null) {
                         return;
                     }
 
-                    $currentEnd = $this->user->memberships()->max('ends_on');
+                    $currentEnd = $item->user->memberships()->max('ends_on');
 
                     $startsOn = $currentEnd !== null && today()->lte($currentEnd)
                         ? Date::parse($currentEnd)->addDay()
                         : today();
 
-                    $this->forceFill([
+                    $item->forceFill([
                         'starts_on' => $startsOn,
-                        'ends_on' => $startsOn->addMonthsNoOverflow($this->plan->months)->subDay(),
+                        'ends_on' => $startsOn->addMonthsNoOverflow($item->plan->months)->subDay(),
                     ])->save();
                 }
                 PHP)
-            ->tryIt('In `php artisan tinker`, run `$m = App\Models\Membership::factory()->unpaid()->create(); $m->fulfil(); $m->confirmationLine()`. You see "Family membership:" with today and the day before the same date next year.')
-            ->commit('Make memberships purchasable')
+            ->tryIt('In `php artisan tinker`, run `$m = App\Models\Membership::factory()->unpaid()->create(); app(App\Services\MembershipService::class)->fulfil($m); $m->confirmationLine()`. You see "Family membership:" with today and the day before the same date next year.')
+            ->commit('Start and renew memberships in the membership service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
             ->docs('https://laravel.com/docs/queries#aggregates', 'Laravel docs: Aggregates')
-            ->check(Check::fileContains('app/Models/Membership.php', 'implements Purchasable')),
+            ->check(Check::fileContains('app/Services/MembershipService.php', 'implements Fulfiller')),
+
+        Step::make('Seed a membership plan')
+            ->run('php artisan make:seeder MembershipPlanSeeder')
+            ->explain(<<<'TEXT'
+                A fresh database has no plans. The page that you build next lists the plans for sale, so it would be empty. Later features need a member too, such as Member pricing. Seed one plan, so every contributor can buy a membership after `php artisan migrate:fresh --seed`.
+
+                Run the command below. Fill in `MembershipPlanSeeder` with one Family plan: $95.00 for 12 months, at position 1. A seeder can run more than once on the same database. Use `updateOrCreate()` with the name, as `FormSeeder` does with the key, so a second run does not make a second Family plan. Then add the seeder to the `$this->call([...])` list in `DatabaseSeeder`.
+                TEXT)
+            ->think('The seeder does not set `is_active`. Which value does the plan get? Staff untick "Sell this plan" and you run the seeder again. Is the plan for sale again?')
+            ->hint('`MembershipPlan::updateOrCreate([\'name\' => \'Family\'], [...])` finds the plan by its name, or creates it.')
+            ->code(<<<'PHP'
+                public function run(): void
+                {
+                    MembershipPlan::updateOrCreate(['name' => 'Family'], [
+                        'description' => 'Two adults and their children. Visit all year, and pay member prices for programs.',
+                        'price_cents' => 9500,
+                        'months' => 12,
+                        'position' => 1,
+                    ]);
+                }
+                PHP)
+            ->tryIt('Run `php artisan db:seed --class=MembershipPlanSeeder` two times. Then, in `php artisan tinker`, run `App\Models\MembershipPlan::count()`. You see `1`.')
+            ->commit('Seed a Family membership plan')
+            ->docs('https://laravel.com/docs/seeding#calling-additional-seeders', 'Laravel docs: Calling additional seeders')
+            ->docs('https://laravel.com/docs/eloquent#upserts', 'Laravel docs: Upserts')
+            ->check(Check::fileContains('database/seeders/DatabaseSeeder.php', 'MembershipPlanSeeder')),
 
         Step::make('Sell memberships on a public page')
-            ->run('php artisan make:controller MembershipController')
+            ->run("php artisan make:controller MembershipController\nphp artisan make:request MembershipRequest")
             ->explain(<<<'TEXT'
-                Add `GET /memberships` named `memberships.index` for everyone, and `POST /memberships` named `memberships.store` with the `auth` middleware. A membership belongs to a family, so the buyer needs an account. A guest who posts the form goes to the login page.
+                First, add the second method to `MembershipService`: `create(User $user, MembershipPlan $plan): Membership`. It makes an unpaid membership with `$user->memberships()->create([...])`. The membership has no dates until the order is paid.
+
+                Then add `GET /memberships` named `memberships.index` for everyone, and `POST /memberships` named `memberships.store` with the `auth` middleware. A membership belongs to a family, so the buyer needs an account. A guest who posts the form goes to the login page.
 
                 `index()` passes the plans `forSale()` and the user's `activeMembership()`. A guest has no user, so use `$request->user()?->activeMembership()`. The view shows each plan with its price, length and description. A logged-in parent sees "Add to cart". A guest sees "Log in to buy". When the parent is a member, show "Your Family membership is active until" and the end date.
 
-                `store()` validates `membership_plan_id`: it must exist and be active. Then it makes an unpaid membership with `$request->user()->memberships()->create([...])`, adds it to the cart, and redirects to the cart.
+                `MembershipRequest` validates `membership_plan_id`: it must exist and be active. `store()` loads the plan, calls `$memberships->create($request->user(), $plan)`, adds the membership to the cart, and redirects to the cart.
 
                 Add a "Memberships" link to the Explore menu in `resources/views/layouts/site.blade.php`.
                 TEXT)
             ->think('The form sends only the plan ID. Where does the price come from? Where does the user come from?')
             ->hint('`Rule::exists(\'membership_plans\', \'id\')->where(\'is_active\', true)` refuses an inactive plan with a validation error.')
-            ->hint('`->middleware(\'auth\')` on one route protects only that route.')
+            ->hint('`->middleware(\'auth\')` on one route protects only that route. The request can then return `true` from `authorize()`: the route already checked the login.')
+            ->hint('`$request->user()` can be `null` for PHPStan, but the `auth` middleware makes sure that it is not. Write `/** @var User $parent */` above the line, as `ChildController::store()` does.')
             ->code(<<<'PHP'
-                $validated = $request->validate([
-                    'membership_plan_id' => ['required', 'integer', Rule::exists('membership_plans', 'id')->where('is_active', true)],
-                ]);
+                public function store(MembershipRequest $request, MembershipService $memberships, CartService $cart): RedirectResponse
+                {
+                    /** @var User $parent */
+                    $parent = $request->user();
+                    $plan = MembershipPlan::findOrFail($request->integer('membership_plan_id'));
 
-                $membership = $request->user()->memberships()->create([
-                    'membership_plan_id' => $validated['membership_plan_id'],
-                ]);
+                    $cart->add($memberships->create($parent, $plan));
 
-                $cart->add($membership);
+                    return to_route('cart.show');
+                }
                 PHP)
             ->tryIt(<<<'TEXT'
-                In `php artisan tinker`, run `App\Models\MembershipPlan::create(['name' => 'Family', 'price_cents' => 9500, 'months' => 12])`.
-
                 Open http://localhost:8000/memberships while you are logged out. You see "Family", $95.00 and "Log in to buy". Log in as `test@example.com`, add the plan to the cart, check out and approve the test payment. Open the Memberships page again. You see "Your Family membership is active until" and a date next year.
                 TEXT)
             ->commit('Sell memberships on the public site')
             ->docs('https://laravel.com/docs/validation#rule-exists', 'Laravel docs: The exists rule')
             ->docs('https://laravel.com/docs/authentication#protecting-routes', 'Laravel docs: Protecting routes')
-            ->check(Check::all(Check::route('memberships.index', 'memberships.store'), Check::view('memberships.index'))),
+            ->check(Check::all(
+                Check::fileContains('app/Services/MembershipService.php', 'function create'),
+                Check::route('memberships.index', 'memberships.store'),
+                Check::view('memberships.index'),
+            )),
+
+        Step::make('Save plans in a service')
+            ->run('php artisan make:class Services/MembershipPlanService')
+            ->explain(<<<'TEXT'
+                Staff add and change plans. Those writes go in `MembershipPlanService`, as the category writes go in `CategoryService`.
+
+                Write two methods: `create(array $data): MembershipPlan` and `update(MembershipPlan $plan, array $data): void`. There is no `delete()`. Families bought the plans, and their memberships point to them. To stop selling a plan, staff set `is_active` to false.
+                TEXT)
+            ->think('A plan has no `delete()`. Where does the app say so: in the service, in the routes, or in the database? Why is each one useful?')
+            ->hint('Each method is one line: `MembershipPlan::create($data)` and `$plan->update($data)`.')
+            ->tryIt('In `php artisan tinker`, run `app(App\Services\MembershipPlanService::class)->create([\'name\' => \'Individual\', \'price_cents\' => 4500, \'months\' => 12])->fresh()->is_active`. You see `true`, from the default of the column. Without `fresh()`, you see `null`: `create()` does not read the default values back from the database.')
+            ->commit('Save membership plans in a service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->check(Check::fileContains('app/Services/MembershipPlanService.php', 'function update')),
 
         Step::make('Let staff manage the plans')
             ->run("php artisan make:controller Admin/MembershipPlanController --resource --model=MembershipPlan\nphp artisan make:request MembershipPlanRequest")
             ->explain(<<<'TEXT'
-                Add `Route::resource('membership-plans', ...)->except(['show', 'destroy'])` in the staff group. Staff do not delete a plan. Families bought it, and their memberships point to it. To stop selling a plan, staff untick "Sell this plan on the public site".
+                Add `Route::resource('membership-plans', ...)->except(['show', 'destroy'])` in the staff group. Staff do not delete a plan. To stop selling it, they untick "Sell this plan on the public site".
 
                 A checkbox that is not ticked sends nothing. So `MembershipPlanRequest::prepareForValidation()` merges `is_active` with `$this->boolean('is_active')`. The last rule of the test sends no `is_active`, and the plan must stop selling.
 
-                Staff type the price in dollars. Write `planData()`, which turns `price` into `price_cents`, as `ProgramSessionRequest::sessionData()` does. Copy the four views from the category admin and add a "Membership plans" link to the staff menu.
+                Staff type the price in dollars. Write `planData()`, which turns `price` into `price_cents`, as `ProgramSessionRequest::sessionData()` does. `store()` and `update()` pass `$request->planData()` to `MembershipPlanService`. Copy the four views from the category admin and add a "Membership plans" link to the staff menu.
                 TEXT)
             ->think('Staff change the price of the Family plan from $95 to $100. What happens to the memberships that families already bought? What happens to a membership that is in a cart?')
             ->hint('Look at `ProgramRequest`. It does the same with `is_published`.')
@@ -222,7 +312,11 @@ return Feature::make('membership-plans')
             ->commit('Add the membership plan admin')
             ->docs('https://laravel.com/docs/controllers#resource-controllers', 'Laravel docs: Resource controllers')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/12', 'Laravel From Scratch, episode 12: Form Request Classes')
-            ->check(Check::all(Check::route('admin.membership-plans.index', 'admin.membership-plans.update'), Check::view('admin.membership-plans.index'))),
+            ->check(Check::all(
+                Check::route('admin.membership-plans.index', 'admin.membership-plans.update'),
+                Check::view('admin.membership-plans.index'),
+                Check::fileContains('app/Http/Controllers/Admin/MembershipPlanController.php', 'MembershipPlanService'),
+            )),
 
         Step::make('Run the checks and open your pull request')
             ->run('php artisan guide:verify membership-plans')
@@ -230,6 +324,8 @@ return Feature::make('membership-plans')
                 Run the acceptance test with `guide:verify`. Then run `composer ci:check`. It runs Pint, PHPStan and every test.
 
                 If a renewal rule fails by one day, check two things: the "minus one day" on the end date, and the `lte()` comparison with today.
+
+                In your pull request, tell reviewers to run `php artisan migrate` and `php artisan db:seed --class=MembershipPlanSeeder`.
                 TEXT)
             ->think('A membership ends on December 31. The parent renews on December 31. On which day does the new membership start? Is that what the family expects?')
             ->tryIt('Run `composer ci:check`. Pint, PHPStan and all the tests pass.')
