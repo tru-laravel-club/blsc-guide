@@ -41,7 +41,7 @@ return Feature::make('instant-navigation')
 
         The important part: **the server does not change**. The route, the controller and the view work as before. The server still sends a complete HTML page, and a link still works without JavaScript. Only the browser does less work. This is the first, and the smallest, part of "the reactive way" in this project. The guide page "The reactive way" explains the rest. Read its table "When to choose which" now. The last row is this feature.
 
-        In this feature, you add `wire:navigate` to the links in the two layouts: the public header and the staff sidebar. Then you look at what changes for scripts, and you try `@persist`, an idea that looks good but does not fit this header.
+        In this feature, you add `wire:navigate` to the links in the two layouts: the public header and the account sidebar. Then you look at what changes for scripts, and you try `@persist`, an idea that looks good but does not fit this header.
         TEXT)
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/4', 'Laravel From Scratch, episode 4: Layout Files')
     ->docs('/guide/reactive', 'BLSC guide: The reactive way')
@@ -61,16 +61,18 @@ return Feature::make('instant-navigation')
                 Read the test before you write code. It does not click anything, because a feature test has no browser. It reads the HTML that the server sends, finds the `<a>` tags, and checks that each link to a page of the site has `wire:navigate`. That is enough, because the attribute is all that Livewire needs.
 
                 Look at the rule "links that leave the site keep a normal page load". It already passes. It protects the footer while you work.
+
+                The rule "every link in the account sidebar uses wire:navigate" passes too. The starter kit gave those links the attribute. The rule keeps it that way: each link that a later feature adds to the sidebar must have it.
                 TEXT)
             ->think('The test only checks the HTML. What can it not prove about the click in the browser?')
-            ->tryIt('Run `php artisan test tests/Feature/InstantNavigationTest.php`. Four rules fail, because no link in the public header has `wire:navigate` yet.')
+            ->tryIt('Run `php artisan test tests/Feature/InstantNavigationTest.php`. Three rules fail, because the links in the public header and the logo in the sidebar have no `wire:navigate` yet.')
             ->commit('Add the instant navigation acceptance test')
             ->docs('https://laravel.com/docs/http-tests#making-requests', 'Laravel docs: Making requests')
             ->check(Check::fileExists('tests/Feature/InstantNavigationTest.php')),
 
         Step::make('Make the public menu links instant')
             ->explain(<<<'TEXT'
-                First, see a normal page load. Run `php artisan serve` and open http://localhost:8000. Open the developer tools of your browser (F12) and choose the Network tab. Click "Visit Us" in the Explore menu. The list fills with requests: the page, the CSS, the JavaScript, the fonts. The first row has the type "document". That is a full page load.
+                First, see a normal page load. Run `php artisan serve` and open http://localhost:8000. Open the developer tools of your browser (F12) and choose the Network tab. Open the Explore menu and click a link. The list fills with requests: the page, the CSS, the JavaScript, the fonts. The first row has the type "document". That is a full page load.
 
                 Now open `resources/views/layouts/site.blade.php`. Find the `<a>` inside the `@foreach ($links as $link)` loop. Add `wire:navigate` to it. Add it to the logo too: `<x-app-logo href="{{ route('home') }}" wire:navigate />`. The logo is a Blade component, and it passes extra attributes to its `<a>` tag.
 
@@ -82,31 +84,33 @@ return Feature::make('instant-navigation')
                 4. Livewire swaps the `<body>`, adds any new styles or scripts from the `<head>`, and changes the address with the browser history API.
 
                 The menu loop makes every menu link, so one change covers all of them. A new menu entry in `$menus` gets `wire:navigate` with no extra work.
+
+                The Visit Us and Camps and clubs features add the menu links. If `$menus` is still empty, add a test entry while you try this feature: `'Explore' => [['label' => 'Log in', 'route' => 'login', 'description' => 'A test link.']]`. Set it back before you commit.
                 TEXT)
             ->think('The server sends the complete page, header and footer too. Where is the time saved, then?')
-            ->hint('Put the attribute anywhere inside the opening tag: `<a href="{{ $link[\'url\'] }}" wire:navigate @class([...])>`.')
+            ->hint('Put the attribute anywhere inside the opening tag: `<a href="{{ route($link[\'route\']) }}" wire:navigate @class([...])>`.')
             ->code(<<<'PHP'
                 <x-app-logo href="{{ route('home') }}" wire:navigate />
 
                 {{-- In the menu loop --}}
-                <a href="{{ $link['url'] }}" wire:navigate @class([
+                <a href="{{ route($link['route']) }}" wire:navigate @class([
                     'block rounded-md px-3 py-2 hover:bg-accent hover:text-accent-foreground',
-                    'bg-accent' => request()->url() === $link['url'],
+                    'bg-accent' => request()->routeIs($link['route']),
                 ])>
                 PHP)
             ->tryIt(<<<'TEXT'
-                Reload the home page. Open the Console tab of the developer tools and type `window.hello = 'still here'`. Click "Visit Us" in the Explore menu. Type `window.hello` again. You see `'still here'`. A full page load clears every JavaScript variable, so the page was swapped, not reloaded.
+                Reload the home page. Open the Console tab of the developer tools and type `window.hello = 'still here'`. Click a link in the Explore menu. Type `window.hello` again. You see `'still here'`. A full page load clears every JavaScript variable, so the page was swapped, not reloaded.
 
-                Now open the Network tab and click "News". The first row has the type "fetch", not "document". Click it, and find `X-Livewire-Navigate` in the request headers. The response is the full HTML of the News page.
+                Now open the Network tab and click the logo. The first row has the type "fetch", not "document". Click it, and find `X-Livewire-Navigate` in the request headers. The response is the full HTML of the home page.
                 TEXT)
             ->commit('Use wire:navigate in the public menu')
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#basic-usage', 'Livewire docs: wire:navigate')
             ->docs('https://developer.mozilla.org/en-US/docs/Web/API/History/pushState', 'MDN: The pushState() method')
-            ->check(fn (): bool => $navigates('layouts/site.blade.php', 'a', "\$link['url']")),
+            ->check(fn (): bool => $navigates('layouts/site.blade.php', 'a', '$link[')),
 
         Step::make('Add it to the header buttons, but not to every link')
             ->explain(<<<'TEXT'
-                The right side of the header has buttons: Cart, My account, Log in and Create account. They are `<april:button-link>` components. An April UI component passes the attributes that it does not know to its HTML tag. So `wire:navigate` on the component lands on the `<a>`. Add it to all four.
+                The right side of the header has buttons: My account, Log in and Create account. They are `<april:button-link>` components. An April UI component passes the attributes that it does not know to its HTML tag. So `wire:navigate` on the component lands on the `<a>`. Add it to all three. A button that a later feature adds, such as a Cart button, gets it too.
 
                 Not every link gets `wire:navigate`. Use it only for a link to a page of this site that shows HTML. Keep a normal link for:
 
@@ -126,21 +130,21 @@ return Feature::make('instant-navigation')
                 fn (): bool => $navigates('layouts/site.blade.php', 'april:button-link', "route('dashboard')"),
             )),
 
-        Step::make('Make the staff sidebar instant')
+        Step::make('Make the account sidebar instant')
             ->explain(<<<'TEXT'
-                Open `resources/views/layouts/app.blade.php`. This is the layout of the account and staff pages. Some sidebar links already have `wire:navigate`: Dashboard, Profile, Security and Appearance. They came with the Laravel starter kit. The links that contributors added later do not have it.
+                Open `resources/views/layouts/app.blade.php`. This is the layout of the account pages, and later of the staff pages. The sidebar links already have `wire:navigate`: Dashboard, Profile, Security and Appearance. They came with the starter kit. But the `<x-app-logo>` at the top of the sidebar does not have it. Add it.
 
-                Add `wire:navigate` to every `<april:sidebar-menu-button-link>`, and to the `<x-app-logo>` at the top of the sidebar. Staff move between these pages all day, so they gain the most.
+                Later features add links to this sidebar, such as "My children" and the staff pages. Each new link gets `wire:navigate` too. The acceptance test checks every link in the sidebar, so a link without it fails the test. Staff move between these pages all day, so they gain the most.
 
                 The sidebar remembers if it is open or closed in a cookie. The server reads the cookie on every page, so the sidebar keeps its state after a swap too.
                 TEXT)
-            ->think('Why did the links that contributors added not get `wire:navigate`? How can a project stop that from happening again?')
-            ->hint('Search the file for `<april:sidebar-menu-button-link`. Count the links, and count the ones with `wire:navigate`.')
+            ->think('A contributor adds a sidebar link next year and forgets `wire:navigate`. What tells them, before a reviewer does?')
+            ->hint('Search the file for `<april:sidebar-menu-button-link` and for `<x-app-logo`. Compare the attributes of each tag.')
             ->code(<<<'PHP'
-                <april:sidebar-menu-button-link href="{{ route('admin.programs.index') }}" :active="request()->routeIs('admin.programs.*', 'admin.sessions.*')" wire:navigate>
+                <x-app-logo :sidebar="true" class="px-2 py-1" wire:navigate />
                 PHP)
-            ->tryIt('Log in as `staff@example.com` with the password `password`. Click Programs, Categories and Forms in the sidebar. The sidebar does not flash, and the page under it changes.')
-            ->commit('Use wire:navigate in the staff sidebar')
+            ->tryIt('Log in as `test@example.com` with the password `password`. Click Profile, Security and then the logo in the sidebar. The sidebar does not flash, and the page under it changes.')
+            ->commit('Use wire:navigate on the sidebar logo')
             ->check(Check::all(
                 fn (): bool => $navigates('layouts/app.blade.php', 'april:sidebar-menu-button-link'),
                 fn (): bool => $navigates('layouts/app.blade.php', 'x-app-logo'),
@@ -155,7 +159,7 @@ return Feature::make('instant-navigation')
                 Livewire also starts the request early. It sends the request when you press the mouse button, not when you release it. That small time is often enough to load half of the page.
                 TEXT)
             ->think('Most visitors open the site on a phone, on a slow network. Why does the loading bar matter more for them than for you?')
-            ->tryIt('In the Network tab, change "No throttling" to "Slow 4G". Click between the menu links. A thin blue line moves across the top of the page while the next page loads. Set the throttling back to "No throttling" when you finish.')
+            ->tryIt('In the Network tab, change "No throttling" to "Slow 4G". Click the logo, then "Log in", then the logo again. A thin blue line moves across the top of the page while the next page loads. Set the throttling back to "No throttling" when you finish.')
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#customizing-the-progress-bar', 'Livewire docs: Customizing the progress bar')
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#prefetching-links', 'Livewire docs: Prefetching links')
             ->check(Check::fileContains('resources/views/layouts/site.blade.php', 'wire:navigate')),
@@ -177,12 +181,12 @@ return Feature::make('instant-navigation')
                 TEXT)
             ->think('Scripts in the `<head>` run once. Scripts in the `<body>` run again after each swap. Where would you put a script that counts page views?')
             ->tryIt(<<<'TEXT'
-                Log in as staff and open Programs. In the Console tab, run these two lines:
+                Log in as `test@example.com` and open the dashboard. In the Console tab, run these two lines:
 
                 `document.addEventListener('DOMContentLoaded', () => console.log('loaded'))`
                 `document.addEventListener('livewire:navigated', () => console.log('swapped'))`
 
-                Click Categories in the sidebar, then Programs. The console shows "swapped" twice and never "loaded".
+                Click Profile in the sidebar, then Dashboard. The console shows "swapped" twice and never "loaded".
                 TEXT)
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#dont-rely-on-domcontentloaded', 'Livewire docs: Do not rely on DOMContentLoaded')
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#script-evaluation', 'Livewire docs: Script evaluation')
@@ -197,12 +201,12 @@ return Feature::make('instant-navigation')
 
                 The header is the same on every page, so it looks like a good fit. Try it. Wrap the `<header>` in `resources/views/layouts/site.blade.php` in `@persist('site-header')` and `@endpersist`. Then do the Try it below.
 
-                You see two problems. First, the Explore menu stays open over the new page. The menu is an April UI popover, and its "open" state lives in the element. The element is kept, so the state is kept. Second, the highlight of the current page stays on the old link. The server draws the highlight with `request()->url()`, but the kept header was drawn for the old page. The Cart count and the Discover categories would get old in the same way.
+                You see two problems. First, the Explore menu stays open over the new page. The menu is an April UI popover, and its "open" state lives in the element. The element is kept, so the state is kept. Second, the highlight of the current page stays on the old link. The server draws the highlight with `request()->routeIs()`, but the kept header was drawn for the old page. Anything in the header that changes, such as a Cart count in a later feature, would get old in the same way.
 
                 Each problem has a fix, such as the `wire:current` directive for the highlight. But the header is cheap: the server draws it in a few milliseconds. The fixes add code, and the gain is small. So remove `@persist` again. Keep an element only when it holds state that the user must not lose.
                 TEXT)
             ->think('The header looks the same on every page. Why is "the same on every page" not a reason to keep it?')
-            ->tryIt('With `@persist` in place, open the Explore menu and click "Visit Us". The menu stays open, and "Visit Us" is not highlighted. Remove `@persist` and `@endpersist`, and do it again. The menu closes, and "Visit Us" is highlighted.')
+            ->tryIt('With `@persist` in place, open the Explore menu and click a link. If the menu has no link yet, add the test entry from the second step again. The menu stays open, and the link is not highlighted. Remove `@persist` and `@endpersist`, and do it again. The menu closes, and the link is highlighted. Remove the test entry.')
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#persisting-elements-across-page-visits', 'Livewire docs: Persisting elements across page visits')
             ->docs('https://livewire.laravel.com/docs/4.x/navigate#highlighting-active-links', 'Livewire docs: Highlighting active links')
             ->check(Check::all(

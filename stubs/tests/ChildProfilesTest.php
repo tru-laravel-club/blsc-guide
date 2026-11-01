@@ -8,7 +8,7 @@ use Illuminate\Support\Carbon;
 | Acceptance test for the "Child profiles" feature.
 |
 | A parent adds each child once: a name, a birthdate and photo consent.
-| A parent sees and changes only their own children. Staff do not see them here.
+| A parent sees and changes only their own children. Nobody else sees them here.
 */
 
 test('guests are sent to the login page', function () {

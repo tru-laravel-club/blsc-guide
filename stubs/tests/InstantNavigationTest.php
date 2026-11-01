@@ -1,6 +1,5 @@
 <?php
 
-use App\Models\Category;
 use App\Models\User;
 
 /*
@@ -40,13 +39,11 @@ function instantNavigationSiteLinks(string $html, string $tag): array
 }
 
 test('the logo and every menu link in the public header use wire:navigate', function () {
-    Category::factory()->create(['name' => 'Clubs', 'slug' => 'clubs']);
-
     $links = instantNavigationSiteLinks($this->get(route('home'))->assertOk()->getContent(), 'header');
 
     expect($links)->not->toBeEmpty();
 
-    foreach ([route('home'), route('visit-us'), route('categories.show', 'clubs'), route('programs.index'), route('login')] as $url) {
+    foreach ([route('home'), route('login'), route('register')] as $url) {
         expect(collect($links)->contains(fn (string $link) => str_contains($link, 'href="'.$url.'"')))->toBeTrue("No header link to {$url}.");
     }
 
@@ -81,9 +78,9 @@ test('links that leave the site keep a normal page load', function () {
     }
 });
 
-test('every link in the staff sidebar uses wire:navigate', function () {
-    $html = $this->actingAs(User::factory()->staff()->create())
-        ->get(route('admin.programs.index'))
+test('every link in the account sidebar uses wire:navigate', function () {
+    $html = $this->actingAs(User::factory()->create())
+        ->get(route('dashboard'))
         ->assertOk()
         ->getContent();
 
@@ -96,9 +93,9 @@ test('every link in the staff sidebar uses wire:navigate', function () {
     }
 });
 
-test('the logo in the staff sidebar uses wire:navigate', function () {
-    $html = $this->actingAs(User::factory()->staff()->create())
-        ->get(route('admin.programs.index'))
+test('the logo in the account sidebar uses wire:navigate', function () {
+    $html = $this->actingAs(User::factory()->create())
+        ->get(route('dashboard'))
         ->getContent();
 
     $logo = collect(instantNavigationLinks($html))
@@ -107,6 +104,6 @@ test('the logo in the staff sidebar uses wire:navigate', function () {
     expect($logo)->not->toBeNull()->toContain('wire:navigate');
 });
 
-test('a menu link still opens its page with a normal request', function () {
-    $this->get(route('visit-us'))->assertOk()->assertSee('Visit Us');
+test('a page still opens with a normal request', function () {
+    $this->get(route('home'))->assertOk()->assertSee('<header', false);
 });

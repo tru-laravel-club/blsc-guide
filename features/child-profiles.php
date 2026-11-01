@@ -9,18 +9,18 @@ return Feature::make('child-profiles')
     ->title('Child profiles')
     ->section(Section::Foundation)
     ->level(2)
-    ->needs(['accounts'])
+    ->needs(['accounts', 'staff-roles'])
     ->summary('Parents add their children once: name, birthdate and photo consent. Registrations and requests use these profiles later. Collect only what BLSC needs.')
-    ->teaches(['Resource controllers', 'Form requests', 'Policies', 'hasMany relationships', 'Dates and ages'])
+    ->teaches(['Resource controllers', 'Form requests', 'Service classes', 'Policies', 'hasMany relationships', 'Dates and ages'])
     ->test('ChildProfilesTest.php')
     ->intro(<<<'TEXT'
         Parents register their children for camps, clubs and parties. Without profiles, they type the same details for each sign-up. In this feature, a parent adds each child once. When you finish, a logged-in parent clicks "My children" in the account sidebar. There, the parent adds, edits and deletes their children.
 
         These are private details about children. So collect only what the code needs, and protect each profile. The `children` table keeps a small fixed core: a name, a birthdate and photo consent. The code reads each of these. Registrations check the age, and staff check photo consent before they post a photo. Other questions, such as medical notes or allergies, change from season to season. They do not go in this table. Later, staff add them as sensitive child fields in the form builder (see the Saved profile answers feature).
 
-        First, you build the data: a `Child` model with a table, and a relationship between users and children. Then you build the pages with a resource controller, which has one method for each job. A policy makes sure that a parent can only see and change their own children.
+        First, you build the data: a `Child` model with a table, and a relationship between users and children. Then you write a `ChildService` that saves, changes and deletes children. Then you build the pages with a resource controller, which has one method for each job. The controller does the HTTP work and calls the service. A policy makes sure that a parent can only see and change their own children.
 
-        Keep this path in mind while you work. The parent opens `/children/3/edit`. The `auth` and `verified` middleware check that the parent is logged in. Laravel finds child 3 in the database. The controller asks the policy if this parent can change this child. If yes, the view shows the form. If no, the parent sees a 403 page.
+        Keep this path in mind while you work. The parent opens `/children/3/edit`. The `auth` and `verified` middleware check that the parent is logged in. Laravel finds child 3 in the database. The controller asks the policy if this parent can change this child. If yes, the view shows the form. If no, the parent sees a 403 page. When the parent saves the form, the controller gives the valid data to `ChildService`, which updates the child.
         TEXT)
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/16', 'Laravel From Scratch, episode 16: Eloquent Relationships')
     ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/18', 'Laravel From Scratch, episode 18: Authorization Using Policies')
@@ -76,7 +76,7 @@ return Feature::make('child-profiles')
                 TEXT)
             ->think('Why does `photo_consent` start as `false` and not `true`?')
             ->hint('`foreignId(\'user_id\')->constrained()` makes the column and a foreign key to the `users` table.')
-            ->hint('Look at `app/Models/Program.php` for `#[Fillable]` and `casts()`. Look at `app/Models/User.php` for `$attributes`.')
+            ->hint('Look at `app/Models/User.php`. It already has `#[Fillable]` and `casts()`. Copy their shape.')
             ->hint('Use the `date` cast for `birthdate` and the `boolean` cast for `photo_consent`.')
             ->code(<<<'PHP'
                 $table->id();
@@ -101,12 +101,12 @@ return Feature::make('child-profiles')
 
                 One parent has many children. Each child belongs to one parent. Add `children(): HasMany` on `User` and `user(): BelongsTo` on `Child`. Add `@property-read` lines to the docblocks, so PHPStan knows about `$user->children` and `$child->user`.
 
-                Then you can write `$user->children()->create([...])`. Eloquent fills in `user_id` for you. You use this in the controller.
+                Then you can write `$user->children()->create([...])`. Eloquent fills in `user_id` for you. You use this in the child service.
 
                 Last, fill in `database/factories/ChildFactory.php`. Set `user_id` to `User::factory()`, so each fake child gets a fake parent. Give it a first name, a birthdate between 4 and 12 years ago, and `photo_consent` set to `false`. The test uses `Child::factory()->for($parent)` to choose the parent.
                 TEXT)
             ->think('Which table has the `user_id` column? Which model gets `hasMany`, and which model gets `belongsTo`?')
-            ->hint('Look at `programs()` in `app/Models/Category.php` and `category()` in `app/Models/Program.php`. They are the same pair.')
+            ->hint('The Laravel docs show the same pair with a `Post` that has many `Comment`s. Open the two "One to many" links below.')
             ->hint('In `User`, return `$this->hasMany(Child::class)`. In `Child`, return `$this->belongsTo(User::class)`.')
             ->hint('In the factory, `fake()->dateTimeBetween(\'-12 years\', \'-4 years\')` gives a date in that range.')
             ->code(<<<'PHP'
@@ -161,6 +161,41 @@ return Feature::make('child-profiles')
             ->docs('https://laravel.com/docs/helpers#method-today', 'Laravel docs: The today() helper')
             ->check(Check::fileContains('app/Models/Child.php', 'function ageOn')),
 
+        Step::make('Write the child service')
+            ->run('php artisan make:class Services/ChildService')
+            ->explain(<<<'TEXT'
+                Before you make the pages, decide where the saves happen. This project has one rule for that: controllers do HTTP, services do the work. A controller validates the request, checks the policy, calls a service and returns a response. It never calls `create()`, `update()` or `delete()` on a model. Every write goes through a class in `app/Services`. Read the guide page "Controllers and services" first. It explains why, with a small example service.
+
+                Run the command below. It makes an empty class in `app/Services`. Remove the empty constructor, and add three methods:
+
+                - `create(User $parent, array $data)` adds a child to a parent through `$parent->children()->create($data)`. Eloquent fills in `user_id`.
+                - `update(Child $child, array $data)` changes the child.
+                - `delete(Child $child)` deletes the child.
+
+                `create()` takes the parent as its own parameter, not from the data. The data comes from a form, and a form can lie. The parent comes from the login.
+                TEXT)
+            ->think('Later, a registration form lets a parent add a new child in the middle of a sign-up. Which class does that code call to save the child? What does it not need to repeat?')
+            ->hint('The example service on the "Controllers and services" page has the same shape: a plain class, one method for each job, and no request in sight.')
+            ->hint('Each `$data` parameter is an array. Add `@param  array<string, mixed>  $data` to the docblock, so PHPStan knows the type of the keys and values.')
+            ->code(<<<'PHP'
+                /**
+                 * Add a child to the parent. The parent comes from the login, never from the form.
+                 *
+                 * @param  array<string, mixed>  $data  the validated fields of the child form
+                 */
+                public function create(User $parent, array $data): Child
+                {
+                    return $parent->children()->create($data);
+                }
+                PHP)
+            ->hint('`update()` calls `$child->update($data)`. `delete()` calls `$child->delete()`. Both return `void`.')
+            ->tryIt('In `php artisan tinker`, run `app(App\Services\ChildService::class)->create(App\Models\User::firstWhere(\'email\', \'test@example.com\'), [\'name\' => \'Ada\', \'birthdate\' => \'2018-05-01\'])->user->email`. You see `"test@example.com"`. Laravel made the service for you with `app()`.')
+            ->commit('Add the child service')
+            ->docs('/guide/services', 'BLSC guide: Controllers and services')
+            ->docs('https://laravel.com/docs/eloquent-relationships#the-create-method', 'Laravel docs: The create method on a relationship')
+            ->docs('https://laravel.com/docs/container#zero-configuration-resolution', 'Laravel docs: Zero configuration resolution')
+            ->check(Check::classExists('App\Services\ChildService')),
+
         Step::make('Create a resource controller and a form request')
             ->run('php artisan make:controller ChildController --resource --model=Child')
             ->explain(<<<'TEXT'
@@ -168,20 +203,27 @@ return Feature::make('child-profiles')
 
                 The add form and the edit form send the same fields. So put the rules in one form request: run `php artisan make:request ChildRequest`. A name is required. The birthdate must be a date before today. Photo consent is a boolean.
 
-                A checkbox that is not ticked sends nothing. Copy the idea of `prepareForValidation()` from `ProgramRequest`: merge `$this->boolean('photo_consent')`, so a missing value becomes `false`.
+                A checkbox that is not ticked sends nothing. Add a `prepareForValidation()` method to the request. Laravel runs it before the rules. In it, merge `$this->boolean('photo_consent')` into the input, so a missing value becomes `false`.
 
                 In `authorize()`, return `true` for any logged-in user. The request does not know about each child. The policy checks that in a later step.
 
-                Fill in the controller. Copy the shape of `app/Http/Controllers/Admin/ProgramController.php`. In `index()`, list only the children of the logged-in parent. In `store()`, create the child through the relationship, so `user_id` comes from the login. After a save or a delete, redirect to the list with a status message.
+                Fill in the controller. Each method is a few lines:
+
+                - `index()` shows the list with only the children of the logged-in parent.
+                - `create()` shows the form with a new, unsaved `Child`. `edit()` shows the form with the child from the URL.
+                - `store()`, `update()` and `destroy()` ask for `ChildService $children` as a parameter, and Laravel passes it in. Each one calls the service, then redirects to the list with a status message, such as "Child added.".
+
+                `store()` gives the service the logged-in parent and the valid data, so `user_id` comes from the login. Change the `Request` parameter of `store()` and `update()` to `ChildRequest`, so Laravel runs your rules first. The command writes no return types. Add them: `View` for the pages and `RedirectResponse` for the redirects. PHPStan asks for them.
                 TEXT)
             ->think('A parent changes the form and sends `user_id` with the ID of another parent. What does your code do with it?')
             ->hint('In `index()`, use `$request->user()->children()->orderBy(\'name\')->get()`.')
-            ->hint('In `store()`, use `$request->user()->children()->create($request->validated())`. `validated()` returns only the fields in your rules.')
+            ->hint('`to_route(\'children.index\')->with(\'status\', \'Child added.\')` redirects and keeps the message for the next page.')
+            ->hint('In `store()`, call `$children->create($request->user(), $request->validated())`. `validated()` returns only the fields in your rules.')
             ->hint('A `user_id` from the form is not in your rules, so `validated()` drops it. `#[Fillable]` is a second guard, because it has no `user_id`.')
             ->code(<<<'PHP'
-                public function store(ChildRequest $request): RedirectResponse
+                public function store(ChildRequest $request, ChildService $children): RedirectResponse
                 {
-                    $request->user()->children()->create($request->validated());
+                    $children->create($request->user(), $request->validated());
 
                     return to_route('children.index')->with('status', 'Child added.');
                 }
@@ -191,12 +233,14 @@ return Feature::make('child-profiles')
             ->docs('https://laravel.com/docs/validation#creating-form-requests', 'Laravel docs: Form requests')
             ->docs('https://laravel.com/docs/validation#preparing-input-for-validation', 'Laravel docs: Preparing input for validation')
             ->docs('https://laravel.com/docs/validation#rule-before', 'Laravel docs: The before rule')
-            ->docs('https://laravel.com/docs/eloquent-relationships#the-create-method', 'Laravel docs: The create method on a relationship')
+            ->docs('https://laravel.com/docs/controllers#method-injection', 'Laravel docs: Method injection')
+            ->docs('https://laravel.com/docs/session#flash-data', 'Laravel docs: Flash data')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/10', 'Laravel From Scratch, episode 10: Controllers')
             ->video('https://laracasts.com/series/laravel-from-scratch-2026/episodes/12', 'Laravel From Scratch, episode 12: Form Request Classes')
             ->check(Check::all(
                 Check::classExists('App\Http\Controllers\ChildController'),
                 Check::classExists('App\Http\Requests\ChildRequest'),
+                Check::fileContains('app/Http/Controllers/ChildController.php', 'ChildService'),
             )),
 
         Step::make('Add the routes for logged-in parents')
@@ -230,7 +274,7 @@ return Feature::make('child-profiles')
 
                 A parent can only see and change their own children. In `update()` and `delete()`, return `true` only when the child belongs to the user. Delete the methods that you do not use. Then, in the controller, call `Gate::authorize()` at the start of `edit()`, `update()` and `destroy()`. When the policy says no, Laravel stops with a 403 page.
 
-                Staff do not get access here. So do not add a staff check to the policy. Staff do not need a family's private details on this page.
+                Nobody else gets access here, and that includes staff. So do not add a staff check to the policy. Staff do not need a family's private details on this page. One test rule logs in as staff and expects a 403. It uses the `staff()` factory state from the Staff roles feature, which is why this feature needs it.
                 TEXT)
             ->think('A parent changes the URL from `/children/3/edit` to `/children/4/edit`. Child 4 belongs to another family. What stops the parent?')
             ->hint('Compare `$user->id` with `$child->user_id`.')
@@ -247,7 +291,7 @@ return Feature::make('child-profiles')
 
                 `$child = App\Models\Child::factory()->create();`
 
-                Then run `$child->user->can('update', $child)`. You see `true`. Run `App\Models\User::firstWhere('email', 'staff@example.com')->can('update', $child)`. You see `false`.
+                Then run `$child->user->can('update', $child)`. You see `true`. Run `App\Models\User::factory()->create()->can('update', $child)`. You see `false`, because that user is another parent.
                 TEXT)
             ->commit('Add ChildPolicy')
             ->docs('https://laravel.com/docs/authorization#creating-policies', 'Laravel docs: Creating policies')
@@ -258,22 +302,25 @@ return Feature::make('child-profiles')
 
         Step::make('Create the views and add a sidebar link')
             ->explain(<<<'TEXT'
-                Now you make the pages that parents see. Use the admin program views as a pattern. They are in `resources/views/admin/programs`. Make `index`, `create` and `edit` views in `resources/views/children`. Put the form fields in one `form` view, and include it in `create` and `edit`. Then the two forms cannot drift apart.
+                Now you make the pages that parents see. Make `index`, `create` and `edit` views in `resources/views/children`. Put the form fields in one `form` view, and include it in `create` and `edit`. Then the two forms cannot drift apart.
 
-                Use `<x-layouts::app>`, because these pages are in the account area. On the list, show each child with the birthdate and the age today: `$child->ageOn(today())`. When the list is empty, say "You have not added a child yet."
+                Use `<x-layouts::app>`, because these pages are in the account area. On the list, show each child with the birthdate and the age today: `$child->ageOn(today())`. When the list is empty, say "You have not added a child yet." At the top of the list, show the status message after a redirect: an `<april:alert>` when `session('status')` has a value.
 
-                In the form, use a date field for the birthdate. Use `old()` for each value, so the form keeps the input after a validation error. Put a hidden field with the value `0` before the photo consent checkbox, as the program form does. Then the browser always sends an answer.
+                In the form, use a date field for the birthdate. Use `old()` for each value, so the form keeps the input after a validation error. Put a hidden field with the value `0` before the photo consent checkbox. Then the browser always sends an answer.
 
-                Add "My children" to the Account group in `resources/views/layouts/app.blade.php`.
+                The edit page needs a delete button. A link cannot delete: a link sends `GET`, and a `GET` must never change data. So use a small form with `@csrf` and `@method('DELETE')`, sent to `route('children.destroy', $child)`.
+
+                Add "My children" to the Account group in `resources/views/layouts/app.blade.php`. Give the link `wire:navigate`, like the other sidebar links: every new link to a page of the site uses it. If the Instant navigation feature is done, its test checks this.
                 TEXT)
             ->think('The form request already turns a missing checkbox into `false`. Is the hidden field still useful? What does each one protect?')
-            ->hint('Copy `resources/views/admin/programs`. Change the fields and the route names. Keep `@csrf` in the form and `@method(\'PUT\')` in the edit view.')
+            ->hint('The edit form sends `PUT` to `route(\'children.update\', $child)` with `@method(\'PUT\')`. The create form posts to `route(\'children.store\')`. Both start with `@csrf` and `@include(\'children.form\')`.')
+            ->hint('For the fields, use the starter kit component `<x-form-field>`: `<x-form-field name="name" label="Name" :value="old(\'name\', $child->name)" required />`. For the checkbox, use `<april:checkbox>` and `<april:label>`.')
             ->hint('For a date input, the value must look like `2018-05-01`. Use `$child->birthdate?->toDateString()`. The `?->` handles a new child that has no birthdate.')
             ->hint('For the sidebar, copy the Profile item. Use `route(\'children.index\')` and `request()->routeIs(\'children.*\')`.')
             ->tryIt(<<<'TEXT'
                 Log in as `test@example.com` with the password `password`. Click "My children" in the sidebar. Add a child, change the name, and delete the child. Then save a child with no name. You see an error under the name field.
 
-                Last, add a child and copy the URL of its edit page. Log out, log in as `staff@example.com` with the password `password`, and open that URL. You see a 403 page.
+                Last, add a child and copy the URL of its edit page. Log out, click "Create account" and register a second parent. Open that URL. You see a 403 page.
                 TEXT)
             ->commit('Add the child profile pages')
             ->docs('https://laravel.com/docs/blade#forms', 'Laravel docs: Forms in Blade')
